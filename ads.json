@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-07-25T00:00:00.000Z",
+  "items": [
+    {
+      "id": "akucb-ai",
+      "label": "推荐服务",
+      "title": "AkuCb AI",
+      "description": "稳定、便捷的 AI 中转服务。",
+      "action": "前往官网",
+      "href": "https://www.akucb.com/",
+      "priority": 20
+    },
+    {
+      "id": "open-slot",
+      "label": "合作席位",
+      "title": "虚位以待",
+      "description": "如需入驻，请联系作者。",
+      "action": "联系作者",
+      "href": "https://qm.qq.com/q/uYwWVLfnvc",
+      "kind": "vacancy",
+      "priority": 10
+    }
+  ]
+}
