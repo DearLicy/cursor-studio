@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "description": "Cursor Studio protocol golden fixtures (stage 0). Used by scripts/smoke-protocol-fixtures.mjs",
+  "cases": [
+    {
+      "id": "available-models-basic",
+      "kind": "available_models",
+      "input": "available-models.input.json",
+      "expect": "available-models.expect.json",
+      "notes": "buildAvailableModels shape: modelNames non-empty when provider has models"
+    },
+    {
+      "id": "bidi-json-run",
+      "kind": "extract_inbound",
+      "input": "bidi-json-run.input.json",
+      "expect": "bidi-json-run.expect.json",
+      "notes": "BidiAppend JSON with plain text user_run"
+    },
+    {
+      "id": "openai-chat-request-shape",
+      "kind": "static_json",
+      "input": "openai-chat.request.json",
+      "expect": "openai-chat.request.json",
+      "notes": "Canonical OpenAI chat completions request template for stage 1 mapping"
+    },
+    {
+      "id": "openai-chat-stream-events",
+      "kind": "static_json",
+      "input": "openai-chat.stream-events.json",
+      "expect": "openai-chat.stream-events.json",
+      "notes": "Minimal SSE chunk sequence for stream regression templates"
+    },
+    {
+      "id": "connect-paths",
+      "kind": "static_json",
+      "input": "connect-paths.json",
+      "expect": "connect-paths.json",
+      "notes": "Known Cursor Connect/proto path inventory for backend local.ts"
+    },
+    {
+      "id": "error-mapping",
+      "kind": "static_json",
+      "input": "error-mapping.json",
+      "expect": "error-mapping.json",
+      "notes": "Upstream status to client-visible code mapping (stage 1 implement)"
+    }
+  ]
+}

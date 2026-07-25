@@ -1,0 +1,25 @@
+{
+  "events": [
+    {
+      "type": "text_delta",
+      "text": "Hel"
+    },
+    {
+      "type": "text_delta",
+      "text": "lo"
+    },
+    {
+      "type": "token_delta",
+      "tokens": 2
+    },
+    {
+      "type": "turn_ended",
+      "usage": {
+        "inputTokens": 10,
+        "outputTokens": 2,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0
+      }
+    }
+  ]
+}

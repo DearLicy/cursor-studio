@@ -1,0 +1,43 @@
+{
+  "map": [
+    {
+      "upstreamStatus": 401,
+      "code": "UPSTREAM_UNAUTHORIZED",
+      "validTurn": false
+    },
+    {
+      "upstreamStatus": 403,
+      "code": "UPSTREAM_FORBIDDEN",
+      "validTurn": false
+    },
+    {
+      "upstreamStatus": 429,
+      "code": "UPSTREAM_RATE_LIMIT",
+      "validTurn": false,
+      "cooldown": true
+    },
+    {
+      "upstreamStatus": 500,
+      "code": "UPSTREAM_5XX",
+      "validTurn": false,
+      "failover": true
+    },
+    {
+      "upstreamStatus": 502,
+      "code": "UPSTREAM_5XX",
+      "validTurn": false,
+      "failover": true
+    },
+    {
+      "upstreamStatus": 0,
+      "code": "UPSTREAM_NETWORK",
+      "validTurn": false,
+      "failover": true
+    },
+    {
+      "local": "provider_cooldown",
+      "code": "PROVIDER_COOLDOWN",
+      "validTurn": false
+    }
+  ]
+}

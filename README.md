@@ -1,33 +1,49 @@
-<h1 align="center">Cursor Studio</h1>
+# Cursor Studio
 
-<p align="center">为 Cursor 用户打造的 Windows 桌面管理工具。</p>
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?logo=windows&logoColor=white)](https://github.com/DearLicy/cursor-studio/releases/latest)
+[![Release](https://img.shields.io/github/v/release/DearLicy/cursor-studio?display_name=tag&sort=semver&label=release)](https://github.com/DearLicy/cursor-studio/releases)
+[![License](https://img.shields.io/github/license/DearLicy/cursor-studio)](LICENSE)
 
-<p align="center">
-  <a href="https://github.com/DearLicy/cursor-studio/releases/latest"><strong>下载 Windows 版本</strong></a>
-</p>
+Cursor Studio 是一款面向 Cursor 用户的 Windows 桌面管理工具。它把模型服务、用量、会话和个人工作方式集中在一个清晰、流畅的应用中。
 
-## 产品预览
+[下载 Windows 版本](https://github.com/DearLicy/cursor-studio/releases/latest)
 
-Cursor Studio 将服务状态、缓存命中、使用情况与常用入口集中呈现在概览页，打开应用即可了解当前状态。
+## 主要功能
+
+- **概览中心**：集中查看服务状态、缓存命中率、请求成功率、Token 用量和费用摘要。
+- **模型服务管理**：添加多个服务，启用或停用服务，检查连接状态，并管理可用模型与余额信息。
+- **用量分析**：按时间、模型和服务查看请求、Token、缓存与费用变化，支持导出和本地记录清理。
+- **会话回顾**：从 Cursor 本地会话中按项目或最近活动浏览内容，快速定位对话，支持批量删除和清理空会话。
+- **提示词管理**：创建、编辑、复制、搜索和启用常用提示词，让个人工作方式持续复用。
+- **MCP 与 Skills**：统一管理已使用的 MCP 服务和 Skills，支持发现、导入、更新和整理。
+- **外观与个人设置**：调整界面外观、背景、显示资料、备份与恢复，以及 Cursor 相关偏好。
+- **应用内更新**：发现新版本后可在应用内完成 MSI 下载、安装和重新启动。
+
+## 产品界面
 
 ![Cursor Studio 概览界面](assets/screenshots/overview.png)
 
-## 产品能力
+## 打赏作者
 
-| 功能 | 体验 |
-| --- | --- |
-| 模型服务管理 | 集中管理常用模型服务，按需要启用、停用、编辑与检查连接状态。 |
-| 用量与费用 | 汇总请求、Token、缓存命中和费用变化，使用情况一目了然。 |
-| 会话回顾 | 按项目浏览会话，快速定位对话记录，并清理没有内容的历史会话。 |
-| 提示词管理 | 创建、整理和启用常用提示词，让个人工作方式可以持续复用。 |
-| MCP 与 Skills | 查看和管理 Cursor 正在使用的 MCP 服务与 Skills，支持导入所需技能。 |
-| 个性化设置 | 调整外观、显示资料与 Cursor 相关偏好，让桌面体验更贴合自己的使用习惯。 |
-| 更新体验 | 发现新版本后可在应用内完成下载、安装和重新启动。 |
+如果 Cursor Studio 为你节省了时间，欢迎请作者喝杯咖啡。
 
----
+### 微信 / 支付宝
 
-<p align="center">
-  <img src="assets/support-wechat.png" alt="微信收款码" width="210" />
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="assets/support-alipay.png" alt="支付宝收款码" width="210" />
-</p>
+<table>
+  <tr>
+    <td align="center">
+      <strong>微信</strong><br>
+      <img src="assets/support-wechat.png" alt="微信收款码" width="220">
+    </td>
+    <td align="center">
+      <strong>支付宝</strong><br>
+      <img src="assets/support-alipay.png" alt="支付宝收款码" width="220">
+    </td>
+  </tr>
+</table>
+
+### TRC20 / USDT
+
+```text
+TKu7SNWrmi3n1n6e8FJDgPAwe8oGrxXHvP
+```

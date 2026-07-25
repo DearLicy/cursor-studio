@@ -1,0 +1,414 @@
+﻿import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  Plus,
+  Home,
+  BarChart3,
+  Boxes,
+  Server,
+  Sparkles,
+  MessagesSquare,
+  Settings2,
+  ImageIcon,
+  FileText,
+} from "lucide-react";
+import {
+  appearanceMediaType,
+  appearanceMediaUrl,
+  getApi,
+  waitForApi,
+  type AppearanceConfig,
+  type AppConfig,
+  type SizeModel,
+} from "@/lib/api";
+import { HomePage } from "@/pages/HomePage";
+import { ProvidersPage } from "@/pages/ProvidersPage";
+import { ConfigPage } from "@/pages/ConfigPage";
+import { AppearancePage } from "@/pages/AppearancePage";
+import { UsagePage } from "@/pages/UsagePage";
+import { McpPage } from "@/pages/McpPage";
+import { SkillsPage } from "@/pages/SkillsPage";
+import { SessionsPage } from "@/pages/SessionsPage";
+import { PromptsPage } from "@/pages/PromptsPage";
+import { cn } from "@/lib/utils";
+import { AppNoticeProvider } from "@/components/ui/app-notice";
+import { LoadingState, ErrorState, EmptyState } from "@/components/ui/layout";
+import { WindowControls } from "@/components/ui/window-controls";
+import { AnimatePresence, motion } from "framer-motion";
+
+type View =
+  | "home"
+  | "usage"
+  | "providers"
+  | "prompts"
+  | "mcp"
+  | "skills"
+  | "sessions"
+  | "config"
+  | "appearance";
+
+const NAV: { id: View; label: string; icon: ReactNode }[] = [
+  { id: "home", label: "概览", icon: <Home className="h-4 w-4" /> },
+  { id: "usage", label: "用量", icon: <BarChart3 className="h-4 w-4" /> },
+  { id: "providers", label: "供应商", icon: <Boxes className="h-4 w-4" /> },
+  { id: "prompts", label: "提示词", icon: <FileText className="h-4 w-4" /> },
+  { id: "mcp", label: "MCP", icon: <Server className="h-4 w-4" /> },
+  { id: "skills", label: "Skills", icon: <Sparkles className="h-4 w-4" /> },
+  { id: "sessions", label: "会话", icon: <MessagesSquare className="h-4 w-4" /> },
+  { id: "config", label: "设置", icon: <Settings2 className="h-4 w-4" /> },
+  { id: "appearance", label: "外观", icon: <ImageIcon className="h-4 w-4" /> },
+];
+
+const MAIN_NAV: View[] = [
+  "home",
+  "providers",
+  "usage",
+  "sessions",
+  "prompts",
+  "mcp",
+  "skills",
+  "config",
+  "appearance",
+];
+
+function AppRoot() {
+  const [view, setView] = useState<View>("home");
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [addTick, setAddTick] = useState(0);
+  const [booting, setBooting] = useState(true);
+  const [previewAppearance, setPreviewAppearance] =
+    useState<AppearanceConfig | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const api = await waitForApi(8000);
+        const cfg = await api.getConfig();
+        if (!cancelled) {
+          setConfig(cfg);
+          setPreviewAppearance(cfg.appearance);
+          setError(null);
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setBooting(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const navigate = (next: View) => {
+    if (view === "appearance" && next !== "appearance" && config) {
+      setPreviewAppearance(config.appearance);
+    }
+    setView(next);
+  };
+
+  const addProvider = () => {
+    setView("providers");
+    setAddTick((n) => n + 1);
+  };
+
+  const chrome = <AppChrome view={view} onNavigate={navigate} onAddProvider={addProvider} />;
+
+  if (booting) {
+    return (
+      <div className="app-shell appearance-active flex h-full flex-col">
+        {chrome}
+        <div className="flex flex-1 items-center justify-center">
+          <LoadingState label="启动中…" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="app-shell appearance-active flex h-full flex-col">
+        {chrome}
+        <div className="flex flex-1 items-center justify-center p-8">
+          <div className="w-full max-w-md">
+            <ErrorState
+              title="无法连接控制面"
+              description={`${error} · 请重新打开 Cursor Studio 桌面应用（或 npm run dev）`}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!config) {
+    return (
+      <div className="app-shell appearance-active flex h-full flex-col">
+        {chrome}
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState title="配置为空" description="控制面已连接，但尚未读到有效配置。" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        "app-shell appearance-active relative flex h-full flex-col text-[#111]",
+      )}
+      style={
+        {
+          "--studio-window-opacity": previewAppearance?.windowOpacity ?? 0.12,
+          "--studio-surface-opacity": previewAppearance?.surfaceOpacity ?? 0.46,
+          "--studio-glass-blur": `${previewAppearance?.blur ?? 24}px`,
+        } as CSSProperties
+      }
+    >
+      {previewAppearance ? <StudioBackground appearance={previewAppearance} /> : null}
+      {chrome}
+
+      <div className="app-frame min-h-0 flex-1">
+        <main className="app-content app-scroll min-h-0 min-w-0 flex-1">
+          <AnimatePresence initial={false} mode="wait">
+            <motion.div
+              className="admin-main"
+              key={view}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            >
+            {view === "home" && (
+              <HomePage config={config} onConfigChange={(c) => setConfig(c)} />
+            )}
+            {view === "usage" && <UsagePage />}
+            {view === "providers" && (
+              <ProvidersPage
+                providers={config.providers}
+                onChange={(list) => setConfig({ ...config, providers: list })}
+                addTick={addTick}
+              />
+            )}
+            {view === "prompts" && <PromptsPage />}
+            {view === "mcp" && <McpPage />}
+            {view === "skills" && <SkillsPage />}
+            {view === "sessions" && <SessionsPage />}
+            {view === "config" && (
+              <ConfigPage config={config} onConfigChange={(c) => setConfig(c)} />
+            )}
+            {view === "appearance" && (
+              <AppearancePage
+                appearance={config.appearance}
+                onChange={(a) => {
+                  setConfig({ ...config, appearance: a });
+                  setPreviewAppearance(a);
+                }}
+                onPreviewChange={setPreviewAppearance}
+              />
+            )}
+            </motion.div>
+          </AnimatePresence>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function backgroundLayout(model: SizeModel): {
+  size: string;
+  repeat: string;
+  position: string;
+} {
+  switch (model) {
+    case "contain":
+      return { size: "contain", repeat: "no-repeat", position: "center" };
+    case "repeat":
+      return { size: "auto", repeat: "repeat", position: "0 0" };
+    case "center":
+      return { size: "auto", repeat: "no-repeat", position: "center" };
+    case "not_left":
+      return { size: "cover", repeat: "no-repeat", position: "left center" };
+    case "not_right":
+      return { size: "cover", repeat: "no-repeat", position: "right center" };
+    case "not_top":
+      return { size: "cover", repeat: "no-repeat", position: "center top" };
+    case "not_bottom":
+      return { size: "cover", repeat: "no-repeat", position: "center bottom" };
+    case "not_right_bottom":
+      return { size: "cover", repeat: "no-repeat", position: "right bottom" };
+    case "not_right_top":
+      return { size: "cover", repeat: "no-repeat", position: "right top" };
+    case "not_center":
+      return { size: "cover", repeat: "no-repeat", position: "20% 20%" };
+    default:
+      return { size: "cover", repeat: "no-repeat", position: "center" };
+  }
+}
+
+function StudioBackground({ appearance }: { appearance: AppearanceConfig }) {
+  const [randomSource, setRandomSource] = useState("");
+
+  useEffect(() => {
+    if (
+      !appearance.enabled ||
+      !appearance.autoStatus ||
+      !appearance.randomImageFolder.trim()
+    ) {
+      setRandomSource("");
+      return;
+    }
+
+    let disposed = false;
+    let current = "";
+    const rotate = async () => {
+      try {
+        const result = await getApi().pickRandomAppearance(
+          appearance.randomImageFolder,
+          current,
+        );
+        if (!disposed && result.path) {
+          current = result.path;
+          setRandomSource(result.path);
+        }
+      } catch {
+        // Keep the previous background when the folder is temporarily unavailable.
+      }
+    };
+    void rotate();
+    const timer = window.setInterval(
+      () => void rotate(),
+      Math.max(1, Number(appearance.autoInterval) || 10) * 1000,
+    );
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    appearance.autoInterval,
+    appearance.autoStatus,
+    appearance.enabled,
+    appearance.randomImageFolder,
+  ]);
+
+  if (!appearance.enabled) return null;
+  const source =
+    appearance.autoStatus && appearance.randomImageFolder.trim()
+      ? randomSource || appearance.imagePath
+      : appearance.imagePath;
+  if (!source.trim()) return null;
+
+  const mediaUrl = appearanceMediaUrl(source);
+  const mediaType = appearanceMediaType(source);
+  const layout = backgroundLayout(appearance.sizeModel || "cover");
+  const opacity = Math.min(1, Math.max(0, appearance.opacity));
+  const blur = Math.min(100, Math.max(0, appearance.blur || 0));
+  const blendMode = appearance.blendModel === "auto" ? "normal" : appearance.blendModel;
+  const commonStyle: CSSProperties = {
+    opacity,
+    filter: blur ? `blur(${blur}px)` : undefined,
+    mixBlendMode: blendMode,
+  };
+
+  return (
+    <div className="studio-background" aria-hidden="true">
+      {mediaType === "video" ? (
+        <video
+          key={mediaUrl}
+          className="studio-background-media"
+          src={mediaUrl}
+          autoPlay
+          loop
+          muted
+          playsInline
+          style={{
+            ...commonStyle,
+            objectFit: layout.size === "contain" ? "contain" : "cover",
+            objectPosition: layout.position,
+          }}
+        />
+      ) : (
+        <div
+          className="studio-background-media"
+          style={{
+            ...commonStyle,
+            backgroundImage: `url("${mediaUrl.replace(/"/g, "%22")}")`,
+            backgroundSize: layout.size,
+            backgroundRepeat: layout.repeat,
+            backgroundPosition: layout.position,
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AppChrome({
+  view,
+  onNavigate,
+  onAddProvider,
+}: {
+  view: View;
+  onNavigate: (view: View) => void;
+  onAddProvider: () => void;
+}) {
+  return (
+    <div className="app-chrome">
+      <div className="titlebar" data-drag-region>
+        <div className="titlebar-inner">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="app-mark"><Boxes className="h-3.5 w-3.5" /></span>
+            <span className="admin-brand">Cursor Studio</span>
+            <span className="admin-version">v0.3</span>
+          </div>
+          <nav className="app-top-nav app-top-nav-full" data-no-drag aria-label="工作区">
+            {MAIN_NAV.map((id) => {
+              const item = NAV.find((candidate) => candidate.id === id)!;
+              const active = view === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={cn("app-top-tab", active && "active")}
+                  onClick={() => onNavigate(id)}
+                  title={item.label}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="active-top-tab"
+                      className="app-top-tab-active"
+                      transition={{ type: "spring", stiffness: 500, damping: 40 }}
+                    />
+                  )}
+                  <span className="relative z-[1]">{item.icon}</span>
+                  <span className="relative z-[1] app-top-tab-label">{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+          <div className="app-top-actions" data-no-drag>
+            <button
+              type="button"
+              className="app-top-add-btn"
+              title="新增供应商"
+              onClick={onAddProvider}
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={2.5} />
+              <span>新增供应商</span>
+            </button>
+          </div>
+          <WindowControls />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AppNoticeProvider>
+      <AppRoot />
+    </AppNoticeProvider>
+  );
+}

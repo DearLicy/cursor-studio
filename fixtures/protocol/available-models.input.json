@@ -1,0 +1,44 @@
+{
+  "providers": [
+    {
+      "id": "prov-openai-1",
+      "displayName": "Fixture OpenAI",
+      "type": "openai",
+      "baseURL": "https://api.example.com/v1",
+      "apiKey": "sk-fixture",
+      "modelID": "gpt-4o-mini",
+      "models": [
+        "gpt-4o-mini",
+        "gpt-4o"
+      ],
+      "modelSettings": {
+        "gpt-4o-mini": {
+          "enabled": true,
+          "favorite": true,
+          "contextWindowTokens": 128000,
+          "inputCostPerMillion": 0.15,
+          "outputCostPerMillion": 0.6
+        },
+        "gpt-4o": {
+          "enabled": true,
+          "favorite": false
+        }
+      },
+      "enabled": true,
+      "openAIEndpoint": "/v1/chat/completions",
+      "reasoningEffort": "medium"
+    },
+    {
+      "id": "prov-disabled",
+      "displayName": "Disabled",
+      "type": "openai",
+      "baseURL": "https://disabled.example.com",
+      "apiKey": "x",
+      "modelID": "x",
+      "models": [
+        "should-not-appear"
+      ],
+      "enabled": false
+    }
+  ]
+}

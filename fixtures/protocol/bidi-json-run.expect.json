@@ -1,0 +1,13 @@
+{
+  "mustHaveRequestIdSubstring": "fixture-rid-001",
+  "mustIncludeTextSubstrings": [
+    "hello-fixture-run"
+  ],
+  "allowedKinds": [
+    "user_run",
+    "user_message",
+    "unknown",
+    "debug_json",
+    "text"
+  ]
+}

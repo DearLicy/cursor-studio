@@ -1,0 +1,5 @@
+{
+  "request_id": "fixture-rid-001",
+  "text": "hello-fixture-run",
+  "model": "gpt-4o-mini"
+}

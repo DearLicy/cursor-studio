@@ -1,0 +1,520 @@
+/*
+ * Desktop shell calibration.
+ *
+ * The reference capture is a 1120 x 760 Electron window rendered at 150%
+ * Windows scaling. Keep these values in logical CSS pixels so the app retains
+ * native desktop density instead of looking like a zoomed web page.
+ */
+
+:root {
+  --desktop-bg: rgba(232, 232, 232, 0.86);
+  --desktop-chrome: rgba(245, 245, 245, 0.58);
+  --desktop-line: rgba(255, 255, 255, 0.62);
+  --desktop-ink: #171717;
+  --desktop-muted: rgba(64, 64, 64, 0.68);
+  --desktop-subtle: rgba(64, 64, 64, 0.46);
+  --desktop-card: rgba(255, 255, 255, 0.18);
+  --desktop-radius: 12px;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+body {
+  color: var(--desktop-ink);
+  font-family:
+    "Segoe UI Variable Text",
+    "Segoe UI",
+    "PingFang SC",
+    "Microsoft YaHei UI",
+    system-ui,
+    sans-serif;
+  letter-spacing: 0;
+}
+
+#root {
+  display: block;
+  padding: 0 !important;
+}
+
+.app-shell {
+  position: relative !important;
+  display: flex !important;
+  flex-direction: column !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+  isolation: isolate;
+  border: 1px solid rgba(255, 255, 255, 0.72) !important;
+  border-radius: var(--desktop-radius) !important;
+  clip-path: inset(0 round var(--desktop-radius)) !important;
+  background: var(--desktop-bg) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.035) !important;
+}
+
+.app-shell::before {
+  z-index: 0 !important;
+  border-radius: var(--desktop-radius) !important;
+  background: rgba(232, 232, 232, 0.56) !important;
+  backdrop-filter: blur(var(--studio-glass-blur, 24px)) saturate(0.86) !important;
+  -webkit-backdrop-filter: blur(var(--studio-glass-blur, 24px)) saturate(0.86) !important;
+}
+
+.studio-background {
+  z-index: 0 !important;
+  border-radius: var(--desktop-radius) !important;
+}
+
+/* Fixed application chrome: only the workspace below it scrolls. */
+.app-chrome {
+  position: relative !important;
+  z-index: 10 !important;
+  flex: 0 0 auto !important;
+  width: 100% !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border-bottom: 1px solid var(--desktop-line) !important;
+  background: var(--desktop-chrome) !important;
+  backdrop-filter: blur(24px) saturate(0.92) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(0.92) !important;
+}
+
+.titlebar,
+.titlebar-inner {
+  height: 36px !important;
+  min-height: 36px !important;
+}
+
+.titlebar {
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+  width: 100% !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.36) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.titlebar-inner {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+  max-width: none !important;
+  padding: 0 10px 0 16px !important;
+  gap: 12px !important;
+}
+
+.titlebar-inner > :first-child {
+  min-width: 0 !important;
+  flex-shrink: 0 !important;
+  padding: 0 !important;
+}
+
+.admin-brand {
+  color: var(--desktop-ink) !important;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  letter-spacing: 0 !important;
+}
+
+.admin-version {
+  color: rgba(70, 70, 70, 0.52) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+}
+
+.window-ctrl {
+  width: 32px !important;
+  height: 28px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  color: rgba(45, 45, 45, 0.62) !important;
+  background: transparent !important;
+}
+
+.window-ctrl:hover {
+  color: var(--desktop-ink) !important;
+  background: rgba(0, 0, 0, 0.06) !important;
+}
+
+.window-ctrl-close:hover {
+  color: #fff !important;
+  background: #e81123 !important;
+}
+
+.menubar,
+.menubar-inner {
+  height: 44px !important;
+  min-height: 44px !important;
+}
+
+.menubar {
+  width: 100% !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.menubar-inner {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 20px !important;
+  gap: 12px !important;
+}
+
+.admin-nav {
+  display: flex !important;
+  align-items: center !important;
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  gap: 0 !important;
+  flex-wrap: nowrap !important;
+  overflow: hidden !important;
+}
+
+.admin-nav-link {
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 0 auto !important;
+  gap: 6px !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  padding: 0 14px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  color: rgba(70, 70, 70, 0.72) !important;
+  background: transparent !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  line-height: 1 !important;
+  letter-spacing: 0 !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+}
+
+.admin-nav-link::after {
+  content: "" !important;
+  position: absolute !important;
+  left: 14px !important;
+  right: 14px !important;
+  bottom: 0 !important;
+  height: 2px !important;
+  border-radius: 2px 2px 0 0 !important;
+  background: var(--desktop-ink) !important;
+  opacity: 0 !important;
+  transform: scaleX(0.35) !important;
+  transition: opacity 160ms ease, transform 160ms ease !important;
+}
+
+.admin-nav-link:hover,
+.admin-nav-link.active {
+  color: var(--desktop-ink) !important;
+}
+
+.admin-nav-link.active {
+  font-weight: 600 !important;
+}
+
+.admin-nav-link.active::after {
+  opacity: 1 !important;
+  transform: scaleX(1) !important;
+}
+
+.admin-nav-icon {
+  display: inline-flex !important;
+  opacity: 0.62 !important;
+  transform: none !important;
+}
+
+.admin-nav-link.active .admin-nav-icon,
+.admin-nav-link:hover .admin-nav-icon {
+  opacity: 0.9 !important;
+  transform: none !important;
+}
+
+.menubar-right {
+  display: flex !important;
+  align-items: center !important;
+  flex: 0 0 auto !important;
+}
+
+.menubar-right button {
+  height: 30px !important;
+  padding: 0 14px !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: #111 !important;
+  color: #fff !important;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+}
+
+.app-content.app-scroll {
+  position: relative !important;
+  z-index: 2 !important;
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  overflow-y: scroll !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain !important;
+  scrollbar-gutter: auto !important;
+}
+
+.app-view {
+  width: 100% !important;
+  max-width: none !important;
+  min-height: 100% !important;
+  margin: 0 !important;
+  /* Native Electron scrollbars contribute 17px to the visual right inset. */
+  padding: 24px 26px 48px 32px !important;
+}
+
+/* Shared workspace rhythm. Individual pages keep their own component layout. */
+.cs-page {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 20px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+.cs-page-head {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  gap: 16px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+}
+
+.cs-page-title {
+  display: block !important;
+  margin: 0 !important;
+  color: var(--desktop-ink) !important;
+  font-size: 22px !important;
+  font-weight: 700 !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0 !important;
+}
+
+.cs-page-desc {
+  max-width: 480px !important;
+  margin: 5px 0 0 !important;
+  color: var(--desktop-muted) !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+  letter-spacing: 0 !important;
+}
+
+.page-actions {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 8px !important;
+  flex-shrink: 0 !important;
+  padding-top: 0 !important;
+}
+
+.page-actions button {
+  height: 32px !important;
+  padding: 0 16px !important;
+  border-radius: 7px !important;
+  font-size: 13px !important;
+}
+
+/* The reference page is a fixed desktop inspector: controls left, preview right. */
+.appearance-page > .grid {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 330px !important;
+  align-items: start !important;
+  gap: 20px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+.appearance-page > .grid > .cs-page {
+  gap: 20px !important;
+}
+
+.appearance-page .studio-surface .cs-page {
+  gap: 16px !important;
+}
+
+.appearance-page > .grid > .cs-page .studio-surface .cs-page {
+  gap: 16.75px !important;
+}
+
+.appearance-page .studio-surface {
+  border: 1px solid rgba(255, 255, 255, 0.76) !important;
+  border-radius: 12px !important;
+  background: var(--desktop-card) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.62),
+    0 8px 20px rgba(70, 70, 70, 0.04) !important;
+  backdrop-filter: blur(24px) saturate(0.9) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(0.9) !important;
+}
+
+.appearance-page .studio-surface:hover {
+  border-color: rgba(255, 255, 255, 0.82) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.68),
+    0 8px 20px rgba(70, 70, 70, 0.05) !important;
+}
+
+.appearance-page .studio-surface h3 {
+  color: var(--desktop-ink) !important;
+  font-size: 14px !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+}
+
+.appearance-page .studio-surface p {
+  letter-spacing: 0 !important;
+}
+
+.appearance-page input,
+.appearance-page select,
+.appearance-page .field-input,
+.appearance-page .field-select {
+  height: 35px !important;
+  border: 1px solid rgba(255, 255, 255, 0.78) !important;
+  border-radius: 7px !important;
+  background: rgba(255, 255, 255, 0.56) !important;
+  color: var(--desktop-ink) !important;
+  font-size: 13px !important;
+  letter-spacing: 0 !important;
+}
+
+.appearance-page input::placeholder {
+  color: rgba(80, 80, 80, 0.45) !important;
+}
+
+.appearance-page .studio-subtle-surface {
+  min-height: 66px !important;
+  padding: 12px 16px !important;
+  border: 1px solid rgba(255, 255, 255, 0.32) !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.18) !important;
+}
+
+.appearance-page aside {
+  min-width: 0 !important;
+}
+
+.appearance-page aside.sticky,
+.appearance-page aside[class*="sticky"] {
+  top: 16px !important;
+}
+
+.app-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.app-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(17, 17, 17, 0.14);
+  background-clip: content-box;
+}
+
+.app-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(17, 17, 17, 0.22);
+  background-clip: content-box;
+}
+
+/* The window can be resized, but the default 1120px layout remains untouched. */
+@media (max-width: 980px) {
+  .menubar-inner {
+    padding-inline: 14px !important;
+  }
+
+  .admin-nav-link {
+    width: 38px !important;
+    padding: 0 !important;
+  }
+
+  .admin-nav-link::after {
+    left: 8px !important;
+    right: 8px !important;
+  }
+
+  .admin-nav-label {
+    display: none !important;
+  }
+
+  .app-view {
+    padding-inline: 24px !important;
+  }
+
+  .appearance-page > .grid {
+    grid-template-columns: minmax(0, 1fr) 300px !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .menubar-right button {
+    width: 32px !important;
+    padding: 0 !important;
+    font-size: 0 !important;
+  }
+
+  .app-view {
+    padding: 20px 18px 36px !important;
+  }
+
+  .cs-page-head {
+    flex-direction: column !important;
+  }
+
+  .page-actions {
+    width: 100% !important;
+    justify-content: flex-start !important;
+  }
+
+  .appearance-page > .grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-view * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "modelNames": [
+    "prov-openai-1:gpt-4o-mini",
+    "prov-openai-1:gpt-4o"
+  ],
+  "models": [
+    {
+      "name": "prov-openai-1:gpt-4o-mini",
+      "clientDisplayName": "Fixture OpenAI · gpt-4o-mini",
+      "serverModelName": "prov-openai-1:gpt-4o-mini",
+      "contextTokenLimit": 128000,
+      "supportsAgent": true,
+      "supportsThinking": true,
+      "supportsImages": true,
+      "variantCount": 6
+    },
+    {
+      "name": "prov-openai-1:gpt-4o",
+      "clientDisplayName": "Fixture OpenAI · gpt-4o",
+      "serverModelName": "prov-openai-1:gpt-4o",
+      "contextTokenLimit": 200000,
+      "supportsAgent": true,
+      "supportsThinking": true,
+      "supportsImages": true,
+      "variantCount": 6
+    }
+  ],
+  "defaultModel": "prov-openai-1:gpt-4o-mini"
+}

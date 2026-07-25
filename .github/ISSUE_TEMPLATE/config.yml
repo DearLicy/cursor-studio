@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用交流与提问
+    url: https://github.com/DearLicy/cursor-studio/discussions
+    about: 适合经验交流、使用提问和想法讨论。
+  - name: 安全问题
+    url: https://github.com/DearLicy/cursor-studio/security/advisories/new
+    about: 请通过私密漏洞报告提交安全问题。

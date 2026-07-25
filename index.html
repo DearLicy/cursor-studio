@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Cursor Studio third-party model and workspace control panel" />
+    <link rel="icon" type="image/png" href="./icon.png" />
+    <title>Cursor Studio v1.0.0</title>
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      body {
+        background: #FAF9F5;
+        color: #111;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+      #boot-fallback {
+        display: flex; align-items: center; justify-content: center;
+        height: 100%; color: #999; font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div id="boot-fallback">正在启动 Cursor Studio…</div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

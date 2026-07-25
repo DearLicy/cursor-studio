@@ -1,0 +1,34 @@
+:root {
+  --studio-ink: #111113;
+  --studio-ink-2: #3f3f46;
+  --studio-ink-3: #71717a;
+  --studio-ink-4: #a1a1aa;
+  --studio-ink-5: #d4d4d8;
+  --studio-line: rgba(17, 17, 19, 0.08);
+  --studio-line-2: rgba(17, 17, 19, 0.12);
+  --studio-bg: #f4f4f5;
+  --studio-surface: #ffffff;
+  --studio-radius: 12px;
+  --studio-danger: #dc2626;
+  --studio-ok: #0f766e;
+  --studio-window-opacity: 0.98;
+  --studio-surface-opacity: 0.96;
+  --studio-glass-blur: 0px;
+  --r: 8px;
+  --r-lg: 12px;
+
+  /* Shared workspace primitives. Page styles may specialise these, but the
+     shell and reusable controls keep the same baseline everywhere. */
+  --workspace-panel-radius: 17px;
+  --workspace-control-radius: 10px;
+  --workspace-control-height: 35px;
+  --workspace-switch-width: 36px;
+  --workspace-switch-height: 20px;
+  --workspace-blue: #2d7ff0;
+  --workspace-teal: #1b9c8b;
+  --workspace-ink: #1d2935;
+  --workspace-muted: #73818d;
+  --workspace-line: rgba(129, 177, 208, 0.18);
+  --workspace-fill: #f7fbfd;
+  --workspace-ease: cubic-bezier(0.22, 0.72, 0.28, 1);
+}

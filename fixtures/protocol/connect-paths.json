@@ -1,0 +1,41 @@
+{
+  "unaryOrMock": [
+    "AvailableModels",
+    "GetDefaultModelNudgeData",
+    "ServerTime",
+    "GetServerConfig",
+    "GetTokenUsage",
+    "GetCurrentPeriodUsage",
+    "GetMe",
+    "GetPlanInfo",
+    "GetTeams",
+    "GetManagedSkills",
+    "GetUserPrivacyMode",
+    "GetUsageLimitStatusAndActiveGrants",
+    "IsOnNewPricing",
+    "GetGlassEarlyPreviewEnrollment",
+    "BootstrapStatsig",
+    "GetFirstWindowStatsigDecision",
+    "AuthService/GetEmail",
+    "CountTokens",
+    "GetThoughtAnnotation"
+  ],
+  "streamCore": [
+    "BidiAppend",
+    "RunSSE",
+    "agent.v1.AgentService/Run"
+  ],
+  "httpCompat": [
+    "/v1/chat/completions",
+    "/v1/models",
+    "/healthz"
+  ],
+  "authHttp": [
+    "/oauth/token",
+    "/auth/full_stripe_profile",
+    "/auth/stripe_profile",
+    "/auth/has_valid_payment_method",
+    "/auth/poll",
+    "/auth/logout"
+  ]
+}

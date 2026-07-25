@@ -1,0 +1,983 @@
+/*
+ * Shared motion layer. Imported last so page-specific styles cannot fragment
+ * the application's timing or disable an individual workspace by accident.
+ */
+:root {
+  --workspace-motion-ease: cubic-bezier(0.22, 0.8, 0.25, 1);
+  --workspace-motion-enter: 300ms;
+  --workspace-motion-exit: 220ms;
+  --workspace-motion-interaction: 240ms;
+  --workspace-motion-hover-delay: 50ms;
+  --workspace-motion-delay-1: 220ms;
+  --workspace-motion-delay-2: 250ms;
+  --workspace-motion-delay-3: 280ms;
+  --workspace-radius-surface: 16px;
+  --workspace-radius-control: 10px;
+  --workspace-radius-popover: 12px;
+  --workspace-focus-border: #9bc5f4;
+  --workspace-scrollbar-size: 4px;
+}
+
+/* Window identity stays compact and stable while the app title is dragged. */
+.app-windowbar-brand {
+  width: 220px !important;
+  min-width: 220px !important;
+  flex-basis: 220px !important;
+  gap: 7px !important;
+}
+
+.app-windowbar-brand-name {
+  flex: 0 0 auto !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+.app-windowbar-version-tag {
+  display: inline-flex;
+  min-width: 44px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border: 1px solid rgba(44, 151, 116, 0.2);
+  border-radius: 7px;
+  color: #2c8c6a;
+  background: rgba(226, 247, 237, 0.74);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.app-windowbar-version-tag.has-update {
+  border-color: rgba(208, 91, 91, 0.22);
+  color: #bd5757;
+  background: rgba(255, 232, 232, 0.76);
+}
+
+@media (max-width: 900px) {
+  .app-windowbar-brand {
+    width: 190px !important;
+    min-width: 190px !important;
+    flex-basis: 190px !important;
+  }
+}
+
+@media (max-width: 700px) {
+  .app-windowbar-brand {
+    width: 62px !important;
+    min-width: 62px !important;
+    flex-basis: 62px !important;
+  }
+
+  .app-windowbar-version-tag {
+    display: none;
+  }
+}
+
+/* Overview support actions use the same quiet utility palette as the cards. */
+.home-support-action.is-github .home-support-action__icon {
+  color: #536b7d;
+  background: #edf3f7;
+}
+
+.home-support-action.is-github:hover {
+  border-color: rgba(83, 107, 125, 0.28);
+  color: #385063;
+}
+
+.home-support-action.is-update .home-support-action__icon {
+  color: #2d7ff0;
+  background: #eaf3ff;
+}
+
+.home-support-action.is-update:hover {
+  border-color: rgba(45, 127, 240, 0.3);
+  color: #236fd9;
+}
+
+.home-support-action:disabled {
+  cursor: wait;
+  opacity: 0.64;
+}
+
+.home-update-dialog__version {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border-radius: var(--workspace-radius-control);
+  color: #657783;
+  background: #f3f8fb;
+  font-size: 12px;
+}
+
+.home-update-dialog__version strong {
+  color: #2376df;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.home-update-dialog__summary,
+.home-update-dialog__notes {
+  margin: 12px 0 0;
+  color: #5c6d78;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.home-update-dialog__notes {
+  color: #80909b;
+}
+
+@keyframes workspace-motion-route-in {
+  from {
+    opacity: 0.82;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes workspace-motion-surface-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes workspace-motion-list-in {
+  from {
+    opacity: 0.14;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Route feedback begins immediately; nested surfaces form a 0.24s cascade. */
+.app-page-root.app-page-enter {
+  will-change: opacity, transform;
+  animation: workspace-motion-route-in var(--workspace-motion-enter) var(--workspace-motion-ease) both !important;
+}
+
+/*
+ * This is intentionally a final-layer shorthand. A few legacy page styles
+ * declare `animation: none !important`; using the full shorthand here restores
+ * the shared motion rather than leaving only part of an animation enabled.
+ */
+.page-enter {
+  will-change: opacity, transform;
+  animation: workspace-motion-route-in var(--workspace-motion-enter) var(--workspace-motion-ease) both !important;
+}
+
+/* The shared surface classes already exist across every workspace. */
+.workspace-layer-enter {
+  will-change: opacity, transform;
+  animation: workspace-motion-surface-in var(--workspace-motion-enter) var(--workspace-motion-ease) both !important;
+  animation-delay: 200ms !important;
+}
+
+.workspace-layer-enter--delay-1 {
+  animation-delay: var(--workspace-motion-delay-1) !important;
+}
+
+.workspace-layer-enter--delay-2 {
+  animation-delay: var(--workspace-motion-delay-2) !important;
+}
+
+.workspace-layer-enter--delay-3 {
+  animation-delay: var(--workspace-motion-delay-3) !important;
+}
+
+/* A legacy home rule disabled every child animation with !important. */
+.home-product-home .workspace-layer-enter {
+  will-change: opacity, transform;
+  animation: workspace-motion-surface-in var(--workspace-motion-enter) var(--workspace-motion-ease) both !important;
+  animation-delay: 200ms !important;
+}
+
+.home-product-home .workspace-layer-enter--delay-1 {
+  animation-delay: var(--workspace-motion-delay-1) !important;
+}
+
+.home-product-home .workspace-layer-enter--delay-2 {
+  animation-delay: var(--workspace-motion-delay-2) !important;
+}
+
+.home-product-home .workspace-layer-enter--delay-3 {
+  animation-delay: var(--workspace-motion-delay-3) !important;
+}
+
+/* Lists use a short, capped cascade so long records never animate endlessly. */
+.workspace-list-enter {
+  will-change: opacity, transform;
+  animation: workspace-motion-list-in 240ms var(--workspace-motion-ease) both !important;
+}
+
+@keyframes workspace-motion-message-focus {
+  0% {
+    transform: translate3d(0, 4px, 0);
+  }
+  48% {
+    transform: translate3d(0, -1px, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.sessions-workspace__message.workspace-list-enter.is-active {
+  animation: workspace-motion-message-focus 460ms var(--workspace-motion-ease) both !important;
+  animation-delay: 0ms !important;
+}
+
+@keyframes workspace-motion-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.workspace-refresh-icon.is-spinning,
+.home-refresh-icon.is-spinning {
+  display: inline-block !important;
+  transform-box: fill-box;
+  transform-origin: center;
+  will-change: transform;
+  animation: workspace-motion-spin 720ms linear infinite !important;
+}
+
+@keyframes workspace-motion-status-pulse {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Restore the lightweight live-state feedback that legacy home rules disabled. */
+:is(
+  .app-runtime-dot.on,
+  .app-window-status.is-live .app-window-status-dot,
+  .home-runtime-state.is-live .home-runtime-state-dot,
+  .home-product-home .home-live-dot.on,
+  .home-product-home .home-product-dot.is-live
+) {
+  will-change: opacity, transform;
+  animation: workspace-motion-status-pulse 1.65s ease-in-out infinite !important;
+}
+
+/* Interaction motion is consistent, but commands are never deliberately delayed. */
+.app-sidebar .app-nav-item,
+.app-windowbar-actions .window-ctrl,
+.app-top-tab,
+.app-top-add-btn,
+.app-main :is(button, [role="switch"], input, textarea, [data-radix-select-trigger]),
+.app-dialog-content :is(button, [role="switch"], input, textarea, [data-radix-select-trigger]),
+.app-confirm-button {
+  transition-delay: 0ms !important;
+  transition-property: color, background-color, border-color, box-shadow, opacity, transform, outline-color !important;
+  transition-duration: var(--workspace-motion-interaction) !important;
+  transition-timing-function: var(--workspace-motion-ease) !important;
+}
+
+.app-confirm-button:active {
+  transform: scale(0.98) !important;
+}
+
+/* Hover transitions are intentionally short and deferred just enough to avoid
+ * flicker while the pointer crosses dense desktop controls. Focus and press
+ * feedback remain immediate. */
+.app-sidebar .app-nav-item:hover,
+.app-windowbar-actions .window-ctrl:hover,
+.app-top-tab:hover,
+.app-top-add-btn:hover,
+.app-main :is(button, [role="switch"], input, textarea, [data-radix-select-trigger]):hover,
+.app-dialog-content :is(button, [role="switch"], input, textarea, [data-radix-select-trigger]):hover,
+.app-confirm-button:hover {
+  transition-delay: var(--workspace-motion-hover-delay) !important;
+}
+
+.app-main :is(button, [role="switch"], input, textarea, [data-radix-select-trigger]):focus-visible,
+.app-dialog-content :is(button, [role="switch"], input, textarea, [data-radix-select-trigger]):focus-visible,
+.app-confirm-button:focus-visible,
+.app-main :is(button, [role="switch"]):active,
+.app-dialog-content :is(button, [role="switch"]):active,
+.app-confirm-button:active {
+  transition-delay: 0ms !important;
+}
+
+.app-main :is(button, [role="switch"]):active,
+.app-dialog-content :is(button, [role="switch"]):active {
+  transform: scale(0.98);
+}
+
+/* Keep controls on one radius scale without flattening intentional pill and
+ * circular actions used by the desktop chrome. */
+.app-shell :is(.field-input, .field-select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, [data-radix-select-trigger]),
+.app-dialog-content :is(.field-input, .field-select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, [data-radix-select-trigger]),
+.app-shell :is(.app-primary-btn, .page-action-btn, .app-confirm-button),
+.app-dialog-content .app-confirm-button {
+  border-radius: var(--workspace-radius-control) !important;
+}
+
+/* A focused field remains quiet: a light blue border is sufficient feedback
+ * and does not make the surrounding form jump visually. */
+.app-shell :is(.field-input, .field-select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, [data-radix-select-trigger]):focus,
+.app-shell [data-radix-select-trigger][data-state="open"],
+.app-dialog-content :is(.field-input, .field-select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, [data-radix-select-trigger]):focus,
+.app-dialog-content [data-radix-select-trigger][data-state="open"] {
+  outline: none !important;
+  border-color: var(--workspace-focus-border) !important;
+  box-shadow: none !important;
+}
+
+.app-shell :is(.field-input, .field-select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, [data-radix-select-trigger]):focus,
+.app-shell [data-radix-select-trigger][data-state="open"],
+.app-dialog-content :is(.field-input, .field-select, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, [data-radix-select-trigger]):focus,
+.app-dialog-content [data-radix-select-trigger][data-state="open"] {
+  transition-delay: 0ms !important;
+}
+
+/* Radix switches carry their state on the root and thumb. The shared spring
+ * keeps every page's enable control visually identical. */
+:is(.app-main, .app-dialog-content) [role="switch"] {
+  will-change: transform, background-color;
+  transition:
+    background-color var(--workspace-motion-interaction) var(--workspace-motion-ease),
+    border-color var(--workspace-motion-interaction) var(--workspace-motion-ease),
+    box-shadow var(--workspace-motion-interaction) var(--workspace-motion-ease),
+    transform 160ms var(--workspace-motion-ease) !important;
+}
+
+:is(.app-main, .app-dialog-content) [role="switch"] > span {
+  will-change: transform;
+  transition:
+    transform 260ms var(--workspace-motion-ease),
+    box-shadow var(--workspace-motion-interaction) var(--workspace-motion-ease) !important;
+}
+
+:is(.app-main, .app-dialog-content) [role="switch"][data-state="checked"] > span {
+  box-shadow: 0 2px 6px rgba(31, 70, 101, 0.2) !important;
+}
+
+/* The trigger and chevron use the same cadence as the content panel. */
+:is(.app-shell, .app-dialog-content) [data-radix-select-trigger] > svg {
+  transition: transform var(--workspace-motion-interaction) var(--workspace-motion-ease) !important;
+}
+
+:is(.app-shell, .app-dialog-content) [data-radix-select-trigger][data-state="open"] > svg {
+  transform: rotate(180deg);
+}
+
+@keyframes workspace-motion-dialog-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes workspace-motion-dialog-overlay-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes workspace-motion-dialog-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-50%, calc(-50% + 8px), 0) scale3d(0.985, 0.985, 1);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(-50%, -50%, 0) scale3d(1, 1, 1);
+  }
+}
+
+@keyframes workspace-motion-dialog-out {
+  from {
+    opacity: 1;
+    transform: translate3d(-50%, -50%, 0) scale3d(1, 1, 1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(-50%, calc(-50% + 6px), 0) scale3d(0.99, 0.99, 1);
+  }
+}
+
+.app-dialog-overlay[data-state="open"] {
+  animation: workspace-motion-dialog-overlay-in 220ms var(--workspace-motion-ease) both !important;
+}
+
+.app-dialog-overlay[data-state="closed"] {
+  animation: workspace-motion-dialog-overlay-out var(--workspace-motion-exit) ease-in both !important;
+}
+
+.app-dialog-content[data-state="open"] {
+  will-change: opacity, transform;
+  animation: workspace-motion-dialog-in var(--workspace-motion-enter) var(--workspace-motion-ease) both !important;
+}
+
+.app-dialog-content[data-state="closed"] {
+  will-change: opacity, transform;
+  animation: workspace-motion-dialog-out var(--workspace-motion-exit) ease-in both !important;
+}
+
+@keyframes workspace-motion-shimmer {
+  from {
+    transform: translate3d(-110%, 0, 0);
+  }
+  to {
+    transform: translate3d(110%, 0, 0);
+  }
+}
+
+/* Replace background-position shimmers with a composited transform sweep. */
+:is(
+  .usage-dashboard__skeleton,
+  .config-workspace__skeleton,
+  .appearance-workspace__status-skeleton,
+  .prompts-workspace__skeleton,
+  .tools-workspace__skeleton,
+  .sessions-workspace__list-skeleton,
+  .sessions-workspace__detail-skeleton
+) {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+:is(
+  .usage-dashboard__skeleton,
+  .config-workspace__skeleton,
+  .prompts-workspace__skeleton,
+  .tools-workspace__skeleton,
+  .sessions-workspace__list-skeleton span,
+  .sessions-workspace__detail-skeleton span,
+  .appearance-workspace__status-skeleton span
+) {
+  animation: none !important;
+}
+
+:is(
+  .usage-dashboard__skeleton,
+  .config-workspace__skeleton,
+  .appearance-workspace__status-skeleton,
+  .prompts-workspace__skeleton,
+  .tools-workspace__skeleton,
+  .sessions-workspace__list-skeleton,
+  .sessions-workspace__detail-skeleton
+)::after,
+.home-product-home .home-skeleton::after {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent 25%, rgba(255, 255, 255, 0.56) 50%, transparent 75%);
+  will-change: transform;
+  animation: workspace-motion-shimmer 1.75s linear 100ms infinite;
+}
+
+/* Sonner owns the timing, while this keeps its transient layers composited. */
+[data-sonner-toaster] [data-sonner-toast] {
+  will-change: opacity, transform;
+}
+
+/* The overview uses a custom skeleton layout, so it needs its own final layer. */
+.home-product-home .home-skeleton {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: #f1f6f9 !important;
+}
+
+.home-product-home :is(
+  .home-skeleton__line,
+  .home-skeleton__ring,
+  .home-skeleton__rows > span,
+  .home-skeleton__button,
+  .home-skeleton__metrics > span,
+  .home-skeleton__summary-rows > span,
+  .home-skeleton--tools > span
+) {
+  display: block;
+  border-radius: 9px;
+  background: rgba(164, 189, 205, 0.35);
+}
+
+.home-product-home .home-skeleton__analytics-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  align-items: center;
+  gap: 14px;
+}
+
+.home-product-home .home-skeleton__line--heading {
+  width: min(180px, 70%);
+  height: 14px;
+}
+
+.home-product-home .home-skeleton__ring {
+  width: 120px;
+  height: 120px;
+  grid-row: span 2;
+  justify-self: end;
+  border-radius: 50%;
+}
+
+.home-product-home .home-skeleton__rows,
+.home-product-home .home-skeleton__summary-rows {
+  display: grid;
+  gap: 10px;
+}
+
+.home-product-home .home-skeleton__rows > span {
+  width: 100%;
+  height: 11px;
+}
+
+.home-product-home .home-skeleton__rows > span:nth-child(2) {
+  width: 82%;
+}
+
+.home-product-home .home-skeleton__rows > span:nth-child(3) {
+  width: 65%;
+}
+
+.home-product-home .home-skeleton__button {
+  width: 88px;
+  height: 36px;
+  justify-self: end;
+}
+
+.home-product-home .home-skeleton--health,
+.home-product-home .home-skeleton--summary {
+  display: grid;
+  gap: 18px;
+}
+
+.home-product-home .home-skeleton__metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.home-product-home .home-skeleton__metrics > span {
+  min-height: 84px;
+}
+
+.home-product-home .home-skeleton__summary-rows > span {
+  height: 42px;
+}
+
+.home-product-home .home-skeleton--tools > span {
+  min-height: 65px;
+}
+
+/*
+ * Keep the desktop client responsive even when the host reports a reduced
+ * motion preference. Earlier page sheets used that preference to force
+ * 0.01ms/none, which made the application feel like it was dropping frames.
+ * These overrides retain the same restrained, compositor-only system.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .app-page-root.app-page-enter,
+  .app-page-root:has(.home-product-home).app-page-enter {
+    animation: workspace-motion-route-in var(--workspace-motion-enter) var(--workspace-motion-ease) both !important;
+  }
+
+  .page-enter {
+    animation: workspace-motion-route-in var(--workspace-motion-enter) var(--workspace-motion-ease) both !important;
+  }
+
+  .app-page-root .workspace-layer-enter {
+    animation: workspace-motion-surface-in var(--workspace-motion-enter) var(--workspace-motion-ease) both !important;
+    animation-delay: 200ms !important;
+  }
+
+  .app-page-root .workspace-list-enter {
+    animation: workspace-motion-list-in 240ms var(--workspace-motion-ease) both !important;
+  }
+
+  .app-page-root .sessions-workspace__detail-view {
+    will-change: opacity, transform;
+    animation: sessions-workspace-detail-enter 200ms var(--workspace-motion-ease) 220ms both !important;
+  }
+
+  .app-page-root .workspace-layer-enter--delay-1 {
+    animation-delay: var(--workspace-motion-delay-1) !important;
+  }
+
+  .app-page-root .workspace-layer-enter--delay-2 {
+    animation-delay: var(--workspace-motion-delay-2) !important;
+  }
+
+  .app-page-root .workspace-layer-enter--delay-3 {
+    animation-delay: var(--workspace-motion-delay-3) !important;
+  }
+
+  .app-page-root .workspace-refresh-icon.is-spinning,
+  .home-refresh-icon.is-spinning {
+    animation: workspace-motion-spin 720ms linear infinite !important;
+  }
+
+  .sessions-workspace__message.workspace-list-enter.is-active {
+    animation: workspace-motion-message-focus 460ms var(--workspace-motion-ease) both !important;
+  }
+
+  :is(
+    .app-runtime-dot.on,
+    .app-window-status.is-live .app-window-status-dot,
+    .home-runtime-state.is-live .home-runtime-state-dot,
+    .home-product-home .home-live-dot.on,
+    .home-product-home .home-product-dot.is-live
+  ) {
+    animation: workspace-motion-status-pulse 1.65s ease-in-out infinite !important;
+  }
+
+  .app-dialog-overlay[data-state="open"] {
+    animation: workspace-motion-dialog-overlay-in 220ms var(--workspace-motion-ease) both !important;
+  }
+
+  .app-dialog-overlay[data-state="closed"] {
+    animation: workspace-motion-dialog-overlay-out var(--workspace-motion-exit) ease-in both !important;
+  }
+
+  .app-dialog-content[data-state="open"] {
+    animation: workspace-motion-dialog-in var(--workspace-motion-enter) var(--workspace-motion-ease) both !important;
+  }
+
+  .app-dialog-content[data-state="closed"] {
+    animation: workspace-motion-dialog-out var(--workspace-motion-exit) ease-in both !important;
+  }
+
+  .home-product-home .home-skeleton::after,
+  :is(
+    .usage-dashboard__skeleton,
+    .config-workspace__skeleton,
+    .appearance-workspace__status-skeleton,
+    .prompts-workspace__skeleton,
+    .tools-workspace__skeleton,
+    .sessions-workspace__list-skeleton,
+    .sessions-workspace__detail-skeleton
+  )::after {
+    animation: workspace-motion-shimmer 1.75s linear 100ms infinite !important;
+  }
+
+  .app-sidebar .app-nav-item,
+  .app-windowbar-actions .window-ctrl,
+  .app-top-tab,
+  .app-top-add-btn,
+  .app-main :is(button, [role="switch"], input, textarea, [data-radix-select-trigger]),
+  .app-dialog-content :is(button, [role="switch"], input, textarea, [data-radix-select-trigger]),
+  .app-confirm-button {
+    transition-delay: 0ms !important;
+    transition-duration: var(--workspace-motion-interaction) !important;
+    transition-timing-function: var(--workspace-motion-ease) !important;
+  }
+}
+
+/* Final shared interaction layer. This stays below page sheets so the product
+ * keeps one motion language even where older views still carry local rules. */
+
+@keyframes workspace-motion-popover-in {
+  from {
+    opacity: 0;
+    clip-path: inset(3px 0 14% 0 round var(--workspace-radius-popover));
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 round var(--workspace-radius-popover));
+  }
+}
+
+@keyframes workspace-motion-popover-out {
+  from {
+    opacity: 1;
+    clip-path: inset(0 round var(--workspace-radius-popover));
+  }
+  to {
+    opacity: 0;
+    clip-path: inset(2px 0 10% 0 round var(--workspace-radius-popover));
+  }
+}
+
+@keyframes workspace-motion-popover-item-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 4px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes workspace-motion-tab-in {
+  from {
+    opacity: 0.45;
+    transform: translate3d(7px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Radix places a select surface in a portal. The opacity and clipping motion
+ * preserves its placement transform, so menus retain their anchor precisely. */
+[role="listbox"][data-state="open"] {
+  will-change: opacity, clip-path;
+  border-radius: var(--workspace-radius-popover) !important;
+  animation: workspace-motion-popover-in 240ms var(--workspace-motion-ease) both !important;
+}
+
+[role="listbox"][data-state="closed"] {
+  will-change: opacity, clip-path;
+  animation: workspace-motion-popover-out var(--workspace-motion-exit) ease-in both !important;
+}
+
+[role="listbox"][data-state="open"] [role="option"] {
+  animation: workspace-motion-popover-item-in 220ms var(--workspace-motion-ease) both;
+}
+
+[role="listbox"][data-state="open"] [role="option"]:nth-child(2) {
+  animation-delay: 35ms;
+}
+
+[role="listbox"][data-state="open"] [role="option"]:nth-child(3) {
+  animation-delay: 70ms;
+}
+
+[role="listbox"][data-state="open"] [role="option"]:nth-child(4) {
+  animation-delay: 105ms;
+}
+
+[role="listbox"][data-state="open"] [role="option"]:nth-child(n + 5) {
+  animation-delay: 120ms;
+}
+
+/* Settings tabs already own their state; the active control now receives the
+ * same horizontal arrival used by any tab content marked with this utility. */
+[role="tab"][aria-selected="true"]:not(.app-settings-tab) {
+  animation: workspace-motion-tab-in 240ms var(--workspace-motion-ease) both;
+}
+
+.workspace-tab-panel.is-active,
+.workspace-tab-panel[data-state="open"],
+[role="tabpanel"][data-state="active"] {
+  will-change: opacity, transform;
+  animation: workspace-motion-tab-in var(--workspace-motion-enter) var(--workspace-motion-ease) both;
+}
+
+/* Shared modal geometry is intentionally quieter than a web dialog: the
+ * compact radius and shallow entry animation match the application surfaces. */
+.app-dialog-content {
+  border-radius: var(--workspace-radius-surface) !important;
+}
+
+.app-dialog-close {
+  border-radius: var(--workspace-radius-control) !important;
+}
+
+[data-sonner-toaster] [data-sonner-toast] {
+  border-radius: var(--workspace-radius-surface) !important;
+  transition-duration: var(--workspace-motion-interaction) !important;
+  transition-timing-function: var(--workspace-motion-ease) !important;
+}
+
+/* Increase the reusable text scale by a fraction without changing the page
+ * grids. Page-specific display metrics retain their own hierarchy. */
+body {
+  font-size: 16.5px;
+}
+
+:is(.app-main, .app-dialog-content) .text-xs {
+  font-size: 13.5px !important;
+  line-height: 1.5 !important;
+}
+
+:is(.app-main, .app-dialog-content) .text-sm {
+  font-size: 15.5px !important;
+  line-height: 1.5 !important;
+}
+
+:is(.app-main, .app-dialog-content) .field-label {
+  font-size: 14.5px !important;
+}
+
+.app-main table th {
+  font-size: 13px !important;
+}
+
+.app-main table td {
+  font-size: 14px !important;
+}
+
+:is(.app-main, .app-dialog-content) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, select, [data-radix-select-trigger], .field-input, .field-select) {
+  font-size: 14.5px !important;
+}
+
+.app-dialog-title {
+  font-size: 16.5px !important;
+}
+
+.app-dialog-description {
+  font-size: 13.5px !important;
+}
+
+/* Fine, rounded scrollbars keep the content legible without the heavy browser
+ * rails or the directional buttons found in the default Chromium treatment. */
+:root,
+:root * {
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(79, 111, 135, 0.42) transparent !important;
+}
+
+:root *::-webkit-scrollbar {
+  width: var(--workspace-scrollbar-size) !important;
+  height: var(--workspace-scrollbar-size) !important;
+}
+
+:root *::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: transparent;
+}
+
+:root *::-webkit-scrollbar-thumb {
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: rgba(79, 111, 135, 0.34);
+  background-clip: content-box;
+  transition: background-color var(--workspace-motion-interaction) var(--workspace-motion-ease);
+}
+
+:root *::-webkit-scrollbar-thumb:hover {
+  background: rgba(45, 94, 133, 0.56);
+  background-clip: content-box;
+}
+
+:root *::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Refresh state always makes a full revolution. This also normalizes icons
+ * carrying Tailwind's animate-spin class in views that predate the shared one. */
+.workspace-refresh-icon.is-spinning,
+.home-refresh-icon.is-spinning,
+.app-main .animate-spin {
+  animation: workspace-motion-spin 840ms linear infinite !important;
+}
+
+/* Dialog chrome is one continuous application surface. Keeping the header,
+ * scrollable body, and footer on the same fill avoids the web-modal bands
+ * left behind by older page sheets and also covers ConfirmDialog. */
+.app-dialog-content {
+  --app-dialog-surface: #ffffff;
+  background: var(--app-dialog-surface) !important;
+}
+
+.app-dialog-header,
+.app-dialog-body,
+.app-dialog-footer {
+  border-top: 0 !important;
+  border-bottom: 0 !important;
+  background: var(--app-dialog-surface) !important;
+}
+
+/* The dialog close control shares the frameless window control treatment at
+ * rest, then gives the user a compact directional confirmation on hover. */
+.app-dialog-content .app-dialog-close {
+  border: 1px solid #dce7ee !important;
+  background: #edf4f7 !important;
+  color: #71818e !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72) !important;
+  transform: rotate(0deg);
+  transition-delay: 0ms !important;
+  transition-property: color, background-color, transform !important;
+  transition-duration: var(--workspace-motion-interaction), var(--workspace-motion-interaction), 190ms !important;
+  transition-timing-function: var(--workspace-motion-ease) !important;
+  transition:
+    color var(--workspace-motion-interaction) var(--workspace-motion-ease),
+    background-color var(--workspace-motion-interaction) var(--workspace-motion-ease),
+    transform 190ms var(--workspace-motion-ease) !important;
+}
+
+.app-dialog-content .app-dialog-close:hover {
+  border-color: #df666c !important;
+  background: #e26b71 !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+  transform: rotate(180deg) !important;
+  transition-delay: 0ms !important;
+}
+
+.app-dialog-content .app-dialog-close:focus-visible {
+  transform: rotate(180deg);
+}
+
+/* Dialog feedback stays on its own compositor layer. The overlay avoids a
+ * backdrop filter because fading a full-screen blur makes the window repaint
+ * behind it; the animation itself is limited to opacity and 3D transforms. */
+.app-dialog-overlay[data-state] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  will-change: opacity;
+}
+
+.app-dialog-content[data-state] {
+  backface-visibility: hidden;
+  transform-style: preserve-3d;
+  will-change: opacity, transform;
+}
+
+/* Dialog feedback remains immediate for repeated desktop work. There is no
+ * delayed start, and the exit completes before it feels like a transition. */
+.app-dialog-overlay[data-state="open"] {
+  animation: workspace-motion-dialog-overlay-in 150ms var(--workspace-motion-ease) both !important;
+  animation-delay: 0ms !important;
+}
+
+.app-dialog-overlay[data-state="closed"] {
+  animation: workspace-motion-dialog-overlay-out 120ms ease-in both !important;
+  animation-delay: 0ms !important;
+}
+
+.app-dialog-content[data-state="open"] {
+  animation: workspace-motion-dialog-in 150ms var(--workspace-motion-ease) both !important;
+  animation-delay: 0ms !important;
+}
+
+.app-dialog-content[data-state="closed"] {
+  animation: workspace-motion-dialog-out 120ms ease-in both !important;
+  animation-delay: 0ms !important;
+}
