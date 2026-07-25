@@ -1,10 +1,10 @@
 {
-  "version": "1.0.0",
-  "name": "Cursor Studio v1.0.0",
-  "notes": "Cursor Studio v1.0.0 首次发布。\n\n- 供应商、用量、会话、提示词、MCP 与 Skills 管理\n- 更新检查与远程推荐内容同步\n- 全新的桌面应用界面与动效",
-  "publishedAt": "2026-07-25T02:41:03Z",
-  "releaseUrl": "https://github.com/DearLicy/cursor-studio/releases/tag/v1.0.0",
-  "downloadUrl": "https://github.com/DearLicy/cursor-studio/releases/download/v1.0.0/Cursor.Studio.exe",
-  "sha256": "ff15f556ad6b23cf93849ea6ce7d071ac8f47f1052897c84e2acd8ea182cfb88",
-  "size": 86338109
+  "version": "1.0.1",
+  "name": "Cursor Studio v1.0.1",
+  "notes": "- Windows 安装与在线更新现统一使用 MSI 安装包\n- 修复应用图标、更新检查、托盘退出与多供应商显示\n- 优化供应商管理与发布稳定性",
+  "publishedAt": "2026-07-25T16:37:07Z",
+  "releaseUrl": "https://github.com/DearLicy/cursor-studio/releases/tag/v1.0.1",
+  "downloadUrl": "https://github.com/DearLicy/cursor-studio/releases/download/v1.0.1/Cursor.Studio.msi",
+  "sha256": "9c5b47ff13c09b2ea5984215f037aebbf65c2ede891c4fbb9463319a8dcbed74",
+  "size": 114962432
 }
