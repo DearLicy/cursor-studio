@@ -1,10 +1,10 @@
 {
-  "version": "1.0.2",
-  "name": "Cursor Studio v1.0.2",
-  "notes": "- \u53d1\u5e03 Cursor Studio \u5f00\u6e90\u6e90\u7801\u4e0e\u534f\u4f5c\u914d\u7f6e\n- \u66f4\u65b0 Windows MSI \u5b89\u88c5\u5305\u4e0e\u5e94\u7528\u5185\u66f4\u65b0\u4fe1\u606f",
-  "publishedAt": "2026-07-25T18:32:27Z",
-  "releaseUrl": "https://github.com/DearLicy/cursor-studio/releases/tag/v1.0.2",
-  "downloadUrl": "https://github.com/DearLicy/cursor-studio/releases/download/v1.0.2/Cursor.Studio.msi",
-  "sha256": "7a7dc57da3071742ad10c46a33a60e330ba91ac003039a99b6f294c05969eaf4",
-  "size": 114970624
+  "version": "1.0.3",
+  "name": "Cursor Studio v1.0.3",
+  "notes": "- 修复部分会话出现重复思考、重复回复或内容异常清空的问题。\n- 提升 Plan 模式、长会话、工具调用和断线恢复的稳定性。\n- 优化服务异常与上下文超限时的提示和恢复体验。",
+  "publishedAt": "2026-07-26T19:04:37Z",
+  "releaseUrl": "https://github.com/DearLicy/cursor-studio/releases/tag/v1.0.3",
+  "downloadUrl": "https://github.com/DearLicy/cursor-studio/releases/download/v1.0.3/Cursor.Studio.msi",
+  "sha256": "e823c66d71cb2f985f3b51f0b3c49cd7dcbce1fe910bc50841548a558d037947",
+  "size": 90648576
 }
