@@ -58,6 +58,10 @@ assert.ok(version, "package.version");
 assert.equal(build.appId, "com.cursor-studio.app");
 assert.equal(build.productName, "Cursor Studio");
 assert.ok(Array.isArray(build.win?.target), "win.target");
+assert.notEqual(build.win?.signAndEditExecutable, false, "Windows executable resource editing must stay enabled");
+assert.equal(build.win?.signExecutable, false, "unsigned builds must skip signing without skipping resource editing");
+assert.equal(build.win?.executableName, "Cursor Studio");
+assert.deepEqual(build.electronLanguages, ["zh-CN", "en-US"]);
 const winTargets = targetNames(build.win.target);
 assert.ok(winTargets.includes("msi"), "win.target must include msi for online updates");
 assert.equal(typeof build.msi?.artifactName, "string", "msi.artifactName required for online updates");
@@ -129,8 +133,10 @@ const extraReleaseEntries = fs
 assert.deepEqual(extraReleaseEntries, [], `release contains stale artifacts: ${extraReleaseEntries.join(", ")}`);
 
 // icon / resources for builder
-mustExist("resources/icon.png", 100);
-report.checks.push("resources/icon.png");
+mustExist("resources/icon.ico", 1_000);
+report.checks.push("resources/icon.ico");
+mustExist("resources/icon-runtime.png", 1_000);
+report.checks.push("resources/icon-runtime.png");
 
 // diagnostics module present for release hardening
 mustExist("server/diagnostics/collect.ts", 100);

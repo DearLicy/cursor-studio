@@ -312,10 +312,23 @@ export async function clearEmptySessions(): Promise<{
   removed: string[];
   failed: Array<{ id: string; error: string }>;
 }> {
-  const index = await getIndex(true);
-  const ids = index.items.filter((item) => item.messageCount === 0).map((item) => item.id);
-  const result = await removeSessions(ids);
-  return { ok: true, emptyFound: ids.length, removed: result.removed, failed: result.failed };
+  const emptySources = (await listCursorComposerSessions({ includeEmpty: true }))
+    .filter((item) => item.messageCount === 0);
+  const ids = emptySources.map((item) => item.composerId);
+  if (!ids.length) return { ok: true, emptyFound: 0, removed: [], failed: [] };
+
+  const result = await removeCursorComposerSessions(ids);
+  const removedIds = new Set(result.removed);
+  const cleanupError = result.failed[0]?.error || "会话清理未完成";
+  cachedIndex = undefined;
+  return {
+    ok: true,
+    emptyFound: ids.length,
+    removed: ids.filter((id) => removedIds.has(id)).map(sessionKey),
+    failed: ids
+      .filter((id) => !removedIds.has(id))
+      .map((id) => ({ id: sessionKey(id), error: cleanupError })),
+  };
 }
 
 export async function clearAllSessions(): Promise<{

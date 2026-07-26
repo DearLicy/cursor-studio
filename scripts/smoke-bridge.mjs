@@ -20,6 +20,10 @@ import {
   buildInteractionQueryMessage,
   buildExecServerMessage,
   defaultBridgeTimeoutMs,
+  closeClientShellStream,
+  heartbeatClientExec,
+  recentlyCompletedClientExec,
+  resetClientBridgeRequestState,
 } from "../server/backend/forwarder/client-bridge.ts";
 import {
   buildExecServerMessageJson,
@@ -139,6 +143,76 @@ async function main() {
   assert(r.result === "mcp-from-client", `bridge result=${r.result}`);
   console.log("exec client bridge ok");
 
+  // A stale or malformed result must not be attached to the only waiter.
+  const strictExecRequest = "rid-bridge-strict-exec";
+  const strictExecId = newExecId("call-strict-exec");
+  const strictExec = registerPending(strictExecRequest, {
+    ...pending,
+    execId: strictExecId,
+    messageId: 101,
+    toolCallId: "call-strict-exec",
+  }, 5000);
+  assert(resolveClientExec(strictExecRequest, {
+    execId: "stale-exec-id",
+    toolCallId: "call-strict-exec",
+    result: "stale",
+    ok: true,
+  }) === false, "exec result requires exec_id or message_id");
+  assert(resolveClientExec(strictExecRequest, {
+    messageId: 101,
+    result: "strict-exec-ok",
+    ok: true,
+  }) === true, "message_id resolves the exact exec");
+  assert((await strictExec).result === "strict-exec-ok", "strict exec result");
+
+  const heartbeatRequest = "rid-bridge-heartbeat";
+  const heartbeatExecId = newExecId("call-heartbeat");
+  const heartbeatPending = registerPending(heartbeatRequest, {
+    ...pending,
+    execId: heartbeatExecId,
+    messageId: 303,
+    toolCallId: "call-heartbeat",
+  }, 80);
+  setTimeout(() => {
+    assert(heartbeatClientExec(heartbeatRequest, {
+      execId: heartbeatExecId,
+      messageId: 303,
+    }), "heartbeat must hit its pending exec");
+  }, 50);
+  setTimeout(() => {
+    assert(resolveClientExec(heartbeatRequest, {
+      execId: heartbeatExecId,
+      messageId: 303,
+      result: "heartbeat-kept-alive",
+      ok: true,
+    }), "heartbeat-extended waiter must still resolve");
+  }, 105);
+  assert((await heartbeatPending).result === "heartbeat-kept-alive", "heartbeat resets timeout");
+  assert(recentlyCompletedClientExec(heartbeatRequest, 303), "completion tombstone is retained");
+  resetClientBridgeRequestState(heartbeatRequest);
+  assert(!recentlyCompletedClientExec(heartbeatRequest, 303), "new Run clears old tombstones");
+
+  const closeRecoveryRequest = "rid-bridge-close-recovery";
+  const closeRecoveryExecId = newExecId("call-close-recovery");
+  const closeRecoveryPending = registerPending(closeRecoveryRequest, {
+    ...pending,
+    execId: closeRecoveryExecId,
+    messageId: 304,
+    toolCallId: "call-close-recovery",
+    name: "Read",
+  }, 5_000);
+  assert(closeClientShellStream(closeRecoveryRequest, { messageId: 304 }), "close starts grace");
+  setTimeout(() => {
+    assert(resolveClientExec(closeRecoveryRequest, {
+      execId: closeRecoveryExecId,
+      messageId: 304,
+      result: "late-real-result",
+      ok: true,
+    }), "real result wins during close grace");
+  }, 100);
+  assert((await closeRecoveryPending).result === "late-real-result", "close recovery is cancellable");
+  console.log("heartbeat, reset, and transport-close recovery ok");
+
   // interaction bridge wait/resolve
   const rid2 = "rid-bridge-2";
   const mid = nextMessageId();
@@ -176,6 +250,33 @@ async function main() {
   const ir2 = await ip;
   assert(ir2.result === "selected:a", `interaction result=${ir2.result}`);
   console.log("interaction bridge ok");
+
+  const strictInteractionRequest = "rid-bridge-strict-interaction";
+  const strictInteraction = registerPendingInteraction(
+    strictInteractionRequest,
+    {
+      ...ipending,
+      interactionId: "202",
+      messageId: 202,
+      toolCallId: "call-strict-interaction",
+    },
+    5000,
+  );
+  assert(resolveClientInteraction(strictInteractionRequest, {
+    interactionId: "stale-interaction-id",
+    toolCallId: "call-strict-interaction",
+    result: "stale",
+    ok: true,
+  }) === false, "interaction result requires its interaction ID");
+  assert(resolveClientInteraction(strictInteractionRequest, {
+    messageId: 202,
+    result: "strict-interaction-ok",
+    ok: true,
+  }) === true, "response message ID is the interaction ID");
+  assert(
+    (await strictInteraction).result === "strict-interaction-ok",
+    "strict interaction result",
+  );
 
   // JSON shapes
   const askJson = buildInteractionQueryJson({
@@ -294,7 +395,10 @@ async function main() {
   assert(built.interactionQuery, "buildInteractionQueryMessage");
   const builtExec = buildExecServerMessage(pending);
   assert(builtExec.execServerMessage?.mcpArgs, "buildExecServerMessage mcp");
-  assert(defaultBridgeTimeoutMs("AskQuestion") >= 300_000, "ask timeout");
+  assert(
+    defaultBridgeTimeoutMs("AskQuestion") === 0,
+    "Cursor-owned interactions remain pending until response or cancel",
+  );
   assert(defaultBridgeTimeoutMs("Task") >= 600_000, "task timeout");
   console.log("builders/timeouts ok");
 

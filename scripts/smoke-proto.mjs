@@ -6,6 +6,7 @@ import {
   encodeAgentClientRun,
   encodeAgentClientExecResult,
   encodeAgentClientInteractionResponse,
+  encodeAgentServerInteractionQuery,
   encodeAgentServerExec,
   buildExecServerMessageJson,
   decodeAgentServerMessage,
@@ -51,6 +52,46 @@ function main() {
     model: runDec.modelHint,
     texts: runDec.texts,
   });
+
+  // RunRequest carries Cursor's own user message lineage and a persisted-turn
+  // snapshot. Preserve these protocol facts for later rewind decisions.
+  const lineageState = concatMessages(
+    encodeMessage(8, Buffer.from("turn-1")),
+    encodeMessage(8, Buffer.from("turn-2")),
+    encodeMessage(8, Buffer.from("turn-3")),
+  );
+  const lineageUser = concatMessages(
+    encodeString(1, "lineage prompt"),
+    encodeString(2, "user-message-42"),
+  );
+  const lineageAction = encodeMessage(1, encodeMessage(1, lineageUser));
+  const lineageRun = encodeMessage(
+    1,
+    concatMessages(
+      encodeMessage(1, lineageState),
+      encodeMessage(2, lineageAction),
+    ),
+  );
+  const lineageDecoded = decodeAgentClientMessage(lineageRun);
+  assert(lineageDecoded.userMessageId === "user-message-42", "user message id missing");
+  assert(lineageDecoded.conversationTurnCount === 3, "conversation turn count missing");
+  assert(
+    lineageDecoded.conversationState?.equals(lineageState),
+    "raw conversation state missing from decoded run",
+  );
+  const lineageInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({ request_id: "rid-lineage-1", data: lineageRun.toString("hex") }),
+      "utf8",
+    ),
+  );
+  assert(lineageInbound.userMessageId === "user-message-42", "inbound user message id missing");
+  assert(lineageInbound.conversationTurnCount === 3, "inbound turn count missing");
+  assert(
+    lineageInbound.conversationState?.equals(lineageState),
+    "inbound raw conversation state missing",
+  );
+  console.log("run request lineage metadata ok");
 
   // BidiAppend JSON + hex(data)
   const bidi = {
@@ -103,6 +144,206 @@ function main() {
     texts: fromProtoBidi.texts,
     mode: fromProtoBidi.mode,
   });
+
+  // Real short user turns can carry UserMessage.mode at nested field 4. That
+  // field is not ConversationAction.summarize_action and must stay a run.
+  const chineseRun = Buffer.from(
+    "0a10120e0a0c0a0a0a06e4bda0e5a5bd2001",
+    "hex",
+  );
+  const chineseRunDec = decodeAgentClientMessage(chineseRun);
+  assert(chineseRunDec.kind === "run_request", `chinese run kind=${chineseRunDec.kind}`);
+  assert(chineseRunDec.texts[0] === "你好", `chinese run text=${chineseRunDec.texts[0]}`);
+  assert(chineseRunDec.mode === 1, `chinese run mode=${chineseRunDec.mode}`);
+  const chineseRunInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({ request_id: "rid-chinese-run-1", data: chineseRun.toString("hex") }),
+      "utf8",
+    ),
+  );
+  assert(chineseRunInbound.kind === "user_run", `chinese inbound=${chineseRunInbound.kind}`);
+
+  // Standalone ConversationAction.summarize_action is record-only metadata in
+  // It must never launch provider compaction or be mistaken for cancel.
+  const summarizeClient = encodeMessage(4, encodeMessage(4, Buffer.alloc(0)));
+  const summarizeDec = decodeAgentClientMessage(summarizeClient);
+  assert(
+    summarizeDec.kind === "conversation_action",
+    `summarize kind=${summarizeDec.kind}`,
+  );
+  assert(
+    summarizeDec.conversationAction === "summarize",
+    `summarize action=${summarizeDec.conversationAction}`,
+  );
+  const summarizeInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({
+        request_id: "rid-summarize-1",
+        data: summarizeClient.toString("hex"),
+      }),
+      "utf8",
+    ),
+  );
+  assert(
+    summarizeInbound.kind === "metadata",
+    `summarize inbound=${summarizeInbound.kind}`,
+  );
+
+  const nestedSummarizeClient = encodeMessage(
+    1,
+    encodeMessage(2, encodeMessage(4, Buffer.alloc(0))),
+  );
+  const nestedSummarizeDec = decodeAgentClientMessage(nestedSummarizeClient);
+  assert(
+    nestedSummarizeDec.kind === "summarize_action",
+    `nested summarize kind=${nestedSummarizeDec.kind}`,
+  );
+  const nestedSummarizeInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({
+        request_id: "rid-nested-summarize-1",
+        data: nestedSummarizeClient.toString("hex"),
+      }),
+      "utf8",
+    ),
+  );
+  assert(
+    nestedSummarizeInbound.kind === "summarize",
+    `nested summarize inbound=${nestedSummarizeInbound.kind}`,
+  );
+
+  const cancelClient = encodeMessage(4, encodeMessage(3, Buffer.alloc(0)));
+  const cancelInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({
+        request_id: "rid-cancel-action-1",
+        data: cancelClient.toString("hex"),
+      }),
+      "utf8",
+    ),
+  );
+  assert(
+    cancelInbound.kind === "cancel",
+    `cancel action inbound=${cancelInbound.kind}`,
+  );
+
+  // Empty/unknown ConversationAction payloads are metadata. Cancellation is
+  // recognized only from the cancel_action message branch (field 3/wire 2).
+  const emptyActionClient = encodeMessage(4, Buffer.alloc(0));
+  const emptyActionInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({
+        request_id: "rid-empty-action-1",
+        data: emptyActionClient.toString("hex"),
+      }),
+      "utf8",
+    ),
+  );
+  assert(emptyActionInbound.kind === "metadata", `empty action=${emptyActionInbound.kind}`);
+  const fakeCancelVarint = encodeMessage(4, encodeInt64(3, 1));
+  const fakeCancelInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({
+        request_id: "rid-fake-cancel-1",
+        data: fakeCancelVarint.toString("hex"),
+      }),
+      "utf8",
+    ),
+  );
+  assert(fakeCancelInbound.kind === "metadata", `fake cancel=${fakeCancelInbound.kind}`);
+
+  // SummarizeAction is a message. A same-number varint is not that oneof arm.
+  const fakeSummaryVarint = encodeMessage(4, encodeInt64(4, 1));
+  const fakeSummaryDec = decodeAgentClientMessage(fakeSummaryVarint);
+  assert(
+    fakeSummaryDec.conversationAction === undefined,
+    `fake summary action=${fakeSummaryDec.conversationAction}`,
+  );
+  const fakeSummaryInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({
+        request_id: "rid-fake-summary-1",
+        data: fakeSummaryVarint.toString("hex"),
+      }),
+      "utf8",
+    ),
+  );
+  assert(fakeSummaryInbound.kind === "metadata", `fake summary=${fakeSummaryInbound.kind}`);
+
+  // Resume and plan actions advance a run; they are never implicit
+  // cancellation merely because they carry no direct user text.
+  const resumeClient = encodeMessage(4, encodeMessage(2, Buffer.alloc(0)));
+  const resumeInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({ request_id: "rid-resume-1", data: resumeClient.toString("hex") }),
+      "utf8",
+    ),
+  );
+  assert(resumeInbound.kind === "user_run", `resume inbound=${resumeInbound.kind}`);
+
+  const startPlanUser = concatMessages(encodeString(1, "start the plan"), encodeInt64(4, 3));
+  const startPlanClient = encodeMessage(
+    4,
+    encodeMessage(6, encodeMessage(1, startPlanUser)),
+  );
+  const startPlanInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({
+        request_id: "rid-start-plan-1",
+        data: startPlanClient.toString("hex"),
+      }),
+      "utf8",
+    ),
+  );
+  assert(startPlanInbound.kind === "user_run", `start plan=${startPlanInbound.kind}`);
+  assert(startPlanInbound.texts[0] === "start the plan", "start plan text missing");
+  assert(startPlanInbound.mode === "plan", `start plan mode=${startPlanInbound.mode}`);
+
+  const executePlanClient = encodeMessage(4, encodeMessage(7, encodeInt64(5, 1)));
+  const executePlanInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({
+        request_id: "rid-execute-plan-1",
+        data: executePlanClient.toString("hex"),
+      }),
+      "utf8",
+    ),
+  );
+  assert(executePlanInbound.kind === "user_run", `execute plan=${executePlanInbound.kind}`);
+
+  // Both AgentClientMessage.message and ConversationAction.action are oneofs:
+  // the last recognized encoded branch wins, independent of field number.
+  const userConversationAction = encodeMessage(
+    1,
+    encodeMessage(1, concatMessages(encodeString(1, "last user wins"), encodeInt64(4, 1))),
+  );
+  const summaryConversationAction = encodeMessage(4, Buffer.alloc(0));
+  const actionUserLast = encodeMessage(
+    4,
+    concatMessages(summaryConversationAction, userConversationAction),
+  );
+  const actionSummaryLast = encodeMessage(
+    4,
+    concatMessages(userConversationAction, summaryConversationAction),
+  );
+  assert(
+    decodeAgentClientMessage(actionUserLast).conversationAction === "user_message",
+    "conversation action did not retain last user branch",
+  );
+  assert(
+    decodeAgentClientMessage(actionSummaryLast).conversationAction === "summarize",
+    "conversation action did not retain last summary branch",
+  );
+  assert(
+    decodeAgentClientMessage(Buffer.concat([summarizeClient, chineseRun])).kind === "run_request",
+    "client message did not retain last run branch",
+  );
+  assert(
+    decodeAgentClientMessage(Buffer.concat([chineseRun, summarizeClient])).conversationAction ===
+      "summarize",
+    "client message did not retain last conversation-action branch",
+  );
+  console.log("conversation action classification ok");
 
   // Cursor image attachments live in UserMessage.selected_context.selected_images.
   const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -174,6 +415,68 @@ function main() {
   assert(fromRid.requestId === rid, `runsse rid=${fromRid.requestId}`);
   assert(fromRid.texts.length === 0, "runsse should not invent texts");
   console.log("connect+proto BidiRequestId ok");
+
+  // ExecClientControlMessage is transport state, not another user turn.
+  const execThrowControl = encodeMessage(
+    5,
+    encodeMessage(
+      2,
+      concatMessages(
+        encodeInt64(1, 42),
+        encodeString(2, "fixture client execution failed"),
+      ),
+    ),
+  );
+  const controlDecoded = decodeAgentClientMessage(execThrowControl);
+  assert(controlDecoded.kind === "exec_client_control_message", "exec control kind");
+  assert(controlDecoded.execControl?.kind === "throw", "exec control throw kind");
+  assert(controlDecoded.execControl?.messageId === 42, "exec control message id");
+  const controlInbound = extractInbound(
+    Buffer.from(
+      JSON.stringify({ request_id: "rid-exec-control-1", data: execThrowControl.toString("hex") }),
+      "utf8",
+    ),
+  );
+  assert(controlInbound.kind === "exec_control", "inbound exec control kind");
+  assert(controlInbound.execControl?.messageId === 42, "inbound exec control id");
+  assert(
+    controlInbound.execControl?.error === "fixture client execution failed",
+    "inbound exec control error",
+  );
+  const controlLastWins = decodeAgentClientMessage(
+    encodeMessage(
+      5,
+      concatMessages(
+        encodeMessage(1, encodeInt64(1, 41)),
+        encodeMessage(
+          2,
+          concatMessages(
+            encodeInt64(1, 42),
+            encodeString(2, "last control branch"),
+          ),
+        ),
+      ),
+    ),
+  );
+  assert(controlLastWins.execControl?.kind === "throw", "last exec control branch wins");
+  assert(controlLastWins.execControl?.messageId === 42, "last exec control id wins");
+  const emptyControl = decodeAgentClientMessage(encodeMessage(5, Buffer.alloc(0)));
+  assert(emptyControl.execControl?.kind === "unknown", "empty exec control stays unknown");
+  console.log("exec client control metadata ok");
+
+  const shellStreamThenResult = decodeAgentClientMessage(
+    encodeMessage(
+      2,
+      concatMessages(
+        encodeInt64(1, 43),
+        encodeMessage(14, encodeMessage(1, encodeString(1, "partial output"))),
+        encodeMessage(2, encodeMessage(1, encodeString(1, "final shell result"))),
+        encodeString(15, "exec-oneof-last"),
+      ),
+    ),
+  );
+  assert(shellStreamThenResult.rawKindField === 2, "last exec result branch wins");
+  assert(!shellStreamThenResult.shellStream, "stale shell stream branch is ignored");
 
   // exec result encode → decode（默认 Shell success oneof）
   const execBin = encodeAgentClientExecResult({
@@ -354,6 +657,12 @@ function main() {
   const askDec = decodeAgentClientMessage(askBin);
   assert(askDec.kind === "interaction_response", `ask kind=${askDec.kind}`);
   assert(askDec.messageId === 88, `ask mid=${askDec.messageId}`);
+  assert(askDec.interactionResponse?.kind === "ask_question", "ask structured kind");
+  assert(askDec.interactionResponse?.ok === true, "ask structured status");
+  assert(
+    askDec.interactionResponse?.answers?.[0]?.selectedOptionIds?.join(",") === "a,b",
+    "ask structured answers",
+  );
   assert(
     String(askDec.resultText || "").includes("q1") ||
       String(askDec.texts?.join(" ") || "").includes("q1"),
@@ -389,6 +698,8 @@ function main() {
   });
   const planDec = decodeAgentClientMessage(planBin);
   assert(planDec.kind === "interaction_response", "plan kind");
+  assert(planDec.interactionResponse?.kind === "create_plan", "plan structured kind");
+  assert(planDec.interactionResponse?.planUri === "file:///plan.md", "plan uri decoded");
   assert(
     String(planDec.resultText || "").includes("plan.md") || planDec.messageId === 90,
     "plan uri",
@@ -403,6 +714,66 @@ function main() {
     decodeAgentClientMessage(searchBin).kind === "interaction_response",
     "websearch",
   );
+
+  const emptyPlanBin = encodeAgentClientInteractionResponse({
+    messageId: 92,
+    toolName: "CreatePlan",
+    ok: true,
+    result: {},
+  });
+  const emptyPlanDec = decodeAgentClientMessage(emptyPlanBin);
+  assert(emptyPlanDec.interactionResponse?.ok === false, "empty plan uri accepted");
+  assert(
+    String(emptyPlanDec.interactionResponse?.error || "").includes("empty planUri"),
+    "empty plan uri error",
+  );
+
+  const createPlanQuery = encodeAgentServerInteractionQuery({
+    messageId: 93,
+    toolCallId: "create-plan-call",
+    toolName: "CreatePlan",
+    args: {
+      plan: "Implement the plan",
+      overview: "Overview",
+      name: "Plan name",
+      is_project: true,
+      todos: [
+        {
+          id: "todo-1",
+          content: "First step",
+          status: "in_progress",
+          created_at: 10,
+          updated_at: 20,
+          dependencies: ["todo-0"],
+        },
+      ],
+      phases: [
+        {
+          name: "Phase one",
+          todos: [{ id: "todo-2", content: "Second step", status: "pending" }],
+        },
+      ],
+    },
+  });
+  const interactionBody = decodeFields(createPlanQuery).find(
+    (field) => field.field === 7 && field.bytes,
+  )?.bytes;
+  assert(interactionBody, "create plan interaction body");
+  const createPlanRequest = decodeFields(interactionBody).find(
+    (field) => field.field === 7 && field.bytes,
+  )?.bytes;
+  assert(createPlanRequest, "create plan request body");
+  const createPlanArgs = decodeFields(createPlanRequest).find(
+    (field) => field.field === 1 && field.bytes,
+  )?.bytes;
+  assert(createPlanArgs, "create plan args body");
+  const createPlanFields = decodeFields(createPlanArgs);
+  assert(createPlanFields.some((field) => field.field === 2), "create plan todos missing");
+  assert(
+    createPlanFields.some((field) => field.field === 5 && Number(field.varint) === 1),
+    "create plan project flag missing",
+  );
+  assert(createPlanFields.some((field) => field.field === 6), "create plan phases missing");
   console.log("interaction_response variants ok");
 
   console.log("PASS smoke-proto");

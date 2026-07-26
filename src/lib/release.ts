@@ -13,7 +13,7 @@ import {
  * The updater supplies live state through `ReleaseControl`; the UI deliberately
  * does not perform downloads or file replacement itself.
  */
-export const APP_VERSION = "v1.0.2";
+export const APP_VERSION = "v1.0.3";
 
 export const APP_RELEASE = {
   repositoryUrl: RELEASE_REPOSITORY_URL,

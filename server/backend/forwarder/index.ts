@@ -27,13 +27,35 @@ export {
   appendAssistantWithTools,
   appendToolResult,
   historyAsChatMessages,
+  historyCheckpointSnapshot,
+  historyMessagesSnapshot,
   loadHistory,
+  rewindHistoryToUserMessage,
 } from "./history";
+export type { HistoryCompactionState } from "./history";
+export {
+  projectConversationState,
+  projectConversationTurns,
+  projectConversationStateToChatMessages,
+} from "./conversation-state";
+export {
+  encodeConversationCheckpointState,
+  projectConversationCheckpoint,
+} from "./conversation-checkpoint";
+export type { ConversationCheckpointOptions } from "./conversation-checkpoint";
+export type {
+  ConversationStateProjection,
+  ConversationStateProjectionDiagnostic,
+  ConversationStateProjectionOptions,
+  ProjectedChatMessage,
+} from "./conversation-state";
 export {
   registerPending,
   registerPendingInteraction,
   resolveClientExec,
   resolveClientInteraction,
+  normalizeClientInteractionResult,
+  shouldAutoResumeAfterInteraction,
   shouldUseClientBridge,
   bridgeKindForTool,
   buildExecServerMessage,
@@ -43,6 +65,22 @@ export {
   nextMessageId,
   defaultBridgeTimeoutMs,
 } from "./client-bridge";
+export {
+  ActiveStreamActor,
+  ensureActiveStreamActor,
+  getActiveStreamActorSnapshot,
+  disposeActiveStreamActor,
+} from "./active-stream-actor";
+export type {
+  ActiveStreamActorSnapshot,
+  CompletionDisposition,
+  ExternalWait,
+  ProviderAction,
+  StreamActorCommand,
+  StreamActorDispatchResult,
+  StreamActorEffect,
+  TurnPhase,
+} from "./active-stream-actor";
 export {
   decodeAgentClientMessage,
   decodeAgentServerMessage,
@@ -77,6 +115,12 @@ export {
   encodeConnectEndStream,
   createRunSseWriter,
 } from "./stream-writer";
+export {
+  classifyCursorTerminalError,
+  encodeCursorErrorDetails,
+  buildCursorConnectErrorTrailer,
+  ERROR_DETAILS_TYPE,
+} from "./connect-error";
 export {
   encodeVarint,
   decodeFields,

@@ -17,13 +17,17 @@ export type AgentMode = "agent" | "ask" | "plan" | "debug" | "multitask";
 /** 当前支持本地执行的工具名 */
 export const EXECUTABLE_TOOLS = new Set([
   "Read",
+  "ReadLints",
   "Write",
+  "PatchEdit",
   "Delete",
   "Glob",
   "Grep",
   "Ls",
   "Shell",
   "AwaitShell",
+  "WriteShellStdin",
+  "ForceBackgroundShell",
   "WebFetch",
   "TodoWrite",
 ]);
@@ -66,11 +70,15 @@ const MODE_ALLOW: Record<AgentMode, ReadonlySet<string>> = {
   multitask: new Set([...EXECUTABLE_TOOLS, ...CLIENT_BRIDGE_TOOLS]),
   ask: new Set([
     "Read",
+    "ReadLints",
+    "PatchEdit",
     "Glob",
     "Grep",
     "Ls",
     "Shell",
     "AwaitShell",
+    "WriteShellStdin",
+    "ForceBackgroundShell",
     "WebFetch",
     "TodoWrite",
     "AskQuestion",
@@ -81,11 +89,14 @@ const MODE_ALLOW: Record<AgentMode, ReadonlySet<string>> = {
   ]),
   plan: new Set([
     "Read",
+    "ReadLints",
     "Glob",
     "Grep",
     "Ls",
     "Shell",
     "AwaitShell",
+    "WriteShellStdin",
+    "ForceBackgroundShell",
     "WebFetch",
     "TodoWrite",
     "AskQuestion",
@@ -132,6 +143,42 @@ export const AGENT_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "PatchEdit",
+      description:
+        "Replace exact text in an existing workspace file. The old text must match exactly; use replace_all only when every occurrence should change.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Workspace-relative or absolute path inside the workspace" },
+          old_string: { type: "string", description: "Exact existing text to replace" },
+          new_string: { type: "string", description: "Replacement text; may be empty" },
+          replace_all: { type: "boolean", description: "Replace every exact occurrence" },
+        },
+        required: ["path", "old_string", "new_string"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ReadLints",
+      description:
+        "Read diagnostics produced by the workspace's installed linter or TypeScript compiler. Limit paths to files you are working on when possible.",
+      parameters: {
+        type: "object",
+        properties: {
+          paths: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional workspace-relative or absolute paths inside the workspace",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "Write",
       description: "Write contents to a file (create or overwrite).",
       parameters: {
@@ -141,6 +188,37 @@ export const AGENT_TOOLS: ToolDefinition[] = [
           contents: { type: "string" },
         },
         required: ["path", "contents"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "WriteShellStdin",
+      description:
+        "Write literal characters to an existing background shell. Include a newline when submitting a command or response.",
+      parameters: {
+        type: "object",
+        properties: {
+          shell_id: { type: "string", description: "The shell_id returned by Shell" },
+          chars: { type: "string", description: "Literal text to write to standard input" },
+        },
+        required: ["shell_id", "chars"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ForceBackgroundShell",
+      description:
+        "Move a running Shell call to the background so work can continue. Pass the original Shell tool call id.",
+      parameters: {
+        type: "object",
+        properties: {
+          tool_call_id: { type: "string", description: "The original Shell tool call id" },
+        },
+        required: ["tool_call_id"],
       },
     },
   },

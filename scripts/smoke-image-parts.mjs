@@ -33,6 +33,11 @@ assert.match(openai[0].content[1].image_url.url, /^data:image\/png;base64,/);
 const responses = toResponsesInput(messages);
 assert.equal(responses.input[0].content[1].type, "input_image");
 assert.match(responses.input[0].content[1].image_url, /^data:image\/png;base64,/);
+assert.deepEqual(
+  toResponsesInput([]).input,
+  [],
+  "Empty replay must not synthesize a fake user message",
+);
 
 const anthropic = toAnthropicPayload(messages);
 assert.ok(Array.isArray(anthropic.messages[0].content), "Anthropic content must be blocks");

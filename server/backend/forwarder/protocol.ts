@@ -18,6 +18,7 @@
 import {
   decodeAgentClientMessage,
   modeNumberToName,
+  type DecodedInteractionResponse,
 } from "./agent-proto";
 import {
   decodeFields,
@@ -30,11 +31,14 @@ import type { ChatContentPart } from "../agent/content-parts";
 
 export type InboundKind =
   | "user_run"
+  | "prewarm"
   | "exec_result"
   | "exec_control"
   | "interaction_response"
   | "heartbeat"
+  | "summarize"
   | "cancel"
+  | "metadata"
   | "empty"
   | "unknown";
 
@@ -45,6 +49,42 @@ export type ExecResultInbound = {
   result: string;
   ok: boolean;
   messageId?: number;
+  /** ShellStream frames are partial output. stream_close settles the result. */
+  shellStream?: {
+    event?:
+      | "stdout"
+      | "stderr"
+      | "exit"
+      | "start"
+      | "rejected"
+      | "permission_denied"
+      | "backgrounded";
+    stdout?: string;
+    stderr?: string;
+    exitCode?: number;
+    cwd?: string;
+    aborted?: boolean;
+    shellId?: string;
+    command?: string;
+    workingDirectory?: string;
+    pid?: number;
+    error?: string;
+  };
+  backgroundShell?: {
+    kind: "spawn" | "force";
+    status: "backgrounded" | "rejected" | "permission_denied" | "error" | "unknown";
+    shellId?: string;
+    command?: string;
+    workingDirectory?: string;
+    pid?: number;
+    error?: string;
+  };
+};
+
+export type ExecControlInbound = {
+  kind: "stream_close" | "throw" | "heartbeat" | "unknown";
+  messageId?: number;
+  error?: string;
 };
 
 export type InteractionResultInbound = {
@@ -54,6 +94,8 @@ export type InteractionResultInbound = {
   name?: string;
   result: string;
   ok: boolean;
+  /** Protobuf oneof decoded without lossy recursive string scanning. */
+  structured?: DecodedInteractionResponse;
 };
 
 export type ExtractedInbound = {
@@ -63,19 +105,31 @@ export type ExtractedInbound = {
   contentParts?: ChatContentPart[];
   /** Cursor selected an image even when the Bidi request held no image bytes. */
   hasImageAttachment?: boolean;
+  conversationAction?: ReturnType<typeof decodeAgentClientMessage>["conversationAction"];
+  hasRequestContextPayload?: boolean;
+  hasPendingToolCalls?: boolean;
   modelHint?: string;
   /** agent | ask | plan | debug | multitask */
   mode?: string;
   kind: InboundKind;
   execResult?: ExecResultInbound;
+  execControl?: ExecControlInbound;
   interactionResult?: InteractionResultInbound;
   conversationId?: string;
+  /** Cursor UserMessage.message_id for future rewind / lineage decisions. */
+  userMessageId?: string;
+  /** Count of persisted Cursor turns included with this RunRequest. */
+  conversationTurnCount?: number;
+  /** Raw Cursor ConversationStateStructure for transcript reconciliation. */
+  conversationState?: Buffer;
   /** Bidi 原始 data 字段是否出现 */
   hasDataField: boolean;
   /** protobuf 解码命中 */
   protobufDecoded?: boolean;
   /** Bidi append_seqno（若有） */
   appendSeqno?: number;
+  /** Selected top-level AgentClientMessage oneof field. */
+  agentMessageField?: number;
   path?: "bidi_proto" | "bidi_json" | "runsse" | "agent_client" | "debug_json";
 };
 
@@ -101,6 +155,16 @@ function isLikelyHexString(s: string): boolean {
   return t.length >= 8 && t.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(t);
 }
 
+function isAgentClientMessageHex(s: string): boolean {
+  const t = s.replace(/\s+/g, "");
+  // BidiAppendRequest.data is always hex(AgentClientMessage). Empty protobuf
+  // oneof payloads are only two bytes on the wire (for example, a client
+  // heartbeat is `3a00`), so four hex characters are a complete valid frame.
+  // Requiring a longer string makes those transport messages look like raw
+  // protobuf and terminates RunSSE with an unsupported-message error.
+  return t.length >= 2 && t.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(t);
+}
+
 function looksLikeUuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
     s.trim(),
@@ -123,7 +187,15 @@ export function decodeBidiRequestIdProto(buf: Buffer): string {
   if (!buf?.length) return "";
   try {
     const fields = decodeFields(buf);
-    return String(firstString(fields, 1) || "").trim();
+    const requestId = fields
+      .filter(
+        (field) =>
+          field.field === 1 &&
+          field.wire === 2 &&
+          field.bytes !== undefined,
+      )
+      .at(-1)?.bytes;
+    return String(requestId?.toString("utf8") || "").trim();
   } catch {
     return "";
   }
@@ -138,41 +210,57 @@ export function decodeBidiRequestIdProto(buf: Buffer): string {
 export function decodeBidiAppendRequestProto(buf: Buffer): {
   ok: boolean;
   dataHex?: string;
-  dataRaw?: Buffer;
   requestId?: string;
   appendSeqno?: number;
 } {
   if (!buf?.length) return { ok: false };
   try {
     const fields = decodeFields(buf);
-    const dataBytes = firstBytes(fields, 1);
-    const ridMsg = firstBytes(fields, 2);
-    const seq = firstVarint(fields, 3);
+    const dataBytes = fields
+      .filter(
+        (field) =>
+          field.field === 1 &&
+          field.wire === 2 &&
+          field.bytes !== undefined,
+      )
+      .at(-1)?.bytes;
+    const requestIdParts = fields
+      .filter(
+        (field) =>
+          field.field === 2 &&
+          field.wire === 2 &&
+          field.bytes !== undefined,
+      )
+      .map((field) => field.bytes as Buffer);
+    const ridMsg = requestIdParts.length
+      ? Buffer.concat(requestIdParts)
+      : undefined;
+    const seq = fields
+      .filter(
+        (field) =>
+          field.field === 3 &&
+          field.wire === 0 &&
+          field.varint !== undefined,
+      )
+      .at(-1)?.varint;
 
     let dataHex: string | undefined;
-    let dataRaw: Buffer | undefined;
     if (dataBytes?.length) {
-      const asUtf8 = dataBytes.toString("utf8");
-      if (isLikelyHexString(asUtf8)) {
-        dataHex = asUtf8.replace(/\s+/g, "");
-      } else {
-        dataRaw = dataBytes;
-      }
+      dataHex = dataBytes.toString("utf8").trim();
     }
 
     const requestId = ridMsg ? decodeBidiRequestIdProto(ridMsg) : "";
     // 判别：有 request_id 嵌套 / data / seq 才算 BidiAppendRequest
     // 裸 AgentClientMessage 的 field1 是 RunRequest message，不是长 hex 字符串
-    if (!dataHex && dataRaw && !requestId && seq == null) {
+    if (dataHex && !isAgentClientMessageHex(dataHex) && !requestId && seq == null) {
       return { ok: false };
     }
-    const ok = Boolean(dataHex || dataRaw || requestId || seq != null);
+    const ok = Boolean(dataHex || requestId || seq != null);
     if (!ok) return { ok: false };
 
     return {
       ok: true,
       dataHex,
-      dataRaw,
       requestId: requestId || undefined,
       appendSeqno: seq != null ? Number(seq) : undefined,
     };
@@ -206,10 +294,18 @@ function clientKindToInbound(
   | "mode"
   | "modelHint"
   | "conversationId"
+  | "userMessageId"
+  | "conversationTurnCount"
+  | "conversationState"
   | "execResult"
+  | "execControl"
   | "interactionResult"
   | "contentParts"
   | "hasImageAttachment"
+  | "conversationAction"
+  | "hasRequestContextPayload"
+  | "hasPendingToolCalls"
+  | "agentMessageField"
   | "protobufDecoded"
 > {
   const texts: string[] = [];
@@ -217,34 +313,62 @@ function clientKindToInbound(
   let mode: string | undefined;
   let modelHint: string | undefined;
   let conversationId: string | undefined;
+  let userMessageId: string | undefined;
+  let conversationTurnCount: number | undefined;
+  let conversationState: Buffer | undefined;
   let execResult: ExecResultInbound | undefined;
+  let execControl: ExecControlInbound | undefined;
   let interactionResult: InteractionResultInbound | undefined;
+  const agentMessageField = client.agentMessageField;
 
   if (client.modelHint) modelHint = client.modelHint;
   if (client.mode != null) mode = modeNumberToName(client.mode);
   if (client.conversationId) conversationId = client.conversationId;
+  if (client.userMessageId) userMessageId = client.userMessageId;
+  if (client.conversationTurnCount != null) {
+    conversationTurnCount = client.conversationTurnCount;
+  }
+  if (client.conversationState?.length) {
+    conversationState = Buffer.from(client.conversationState);
+  }
 
   switch (client.kind) {
     case "run_request":
-    case "prewarm_request":
       kind = "user_run";
       for (const t of client.texts) {
         if (isPrintableUserText(t)) texts.push(String(t).trim());
       }
       break;
+    case "prewarm_request":
+      // Prewarm initializes an existing conversation route. It is not a user
+      // turn and must not promote nested tool/MCP metadata into prompt text.
+      kind = "prewarm";
+      break;
     case "conversation_action":
-      if (
-        !client.texts.length &&
-        !client.contentParts?.some((part) => part.type === "image") &&
-        !client.hasImageAttachment
-      ) {
-        kind = "cancel";
-      } else {
-        kind = "user_run";
-        for (const t of client.texts) {
-          if (isPrintableUserText(t)) texts.push(String(t).trim());
-        }
+      switch (client.conversationAction) {
+        case "cancel":
+          kind = "cancel";
+          break;
+        case "user_message":
+        case "resume":
+        case "start_plan":
+        case "execute_plan":
+          kind = "user_run";
+          for (const t of client.texts) {
+            if (isPrintableUserText(t)) texts.push(String(t).trim());
+          }
+          break;
+        default:
+          // Record non-cancel maintenance actions without advancing the
+          // provider state machine. In particular, summarize must not rewrite
+          // local history merely because Cursor emitted this action.
+          kind = "metadata";
       }
+      break;
+    case "summarize_action":
+      // This kind is emitted only for RunRequest.action.summarize_action. A
+      // standalone ConversationAction uses the metadata path above.
+      kind = "summarize";
       break;
     case "exec_client_message":
       kind = "exec_result";
@@ -253,30 +377,35 @@ function clientKindToInbound(
         messageId: client.messageId,
         result: client.resultText || "(empty)",
         ok: !String(client.resultText || "").startsWith("Error:"),
+        shellStream: client.shellStream,
+        backgroundShell: client.backgroundShell,
       };
       break;
     case "exec_client_control_message":
       kind = "exec_control";
+      execControl = client.execControl;
       break;
     case "interaction_response":
       kind = "interaction_response";
       interactionResult = {
         messageId: client.messageId,
-        result: client.resultText || client.texts.join("\n") || "(empty)",
-        ok: !String(client.resultText || "").startsWith("Error:"),
-        toolCallId: client.execId,
+        result: client.resultText || "(empty)",
+        ok: client.interactionResponse?.ok ?? false,
+        structured: client.interactionResponse,
       };
+      break;
+    case "kv_client_message":
+      // Cursor sends KV updates as transport metadata while a provider turn is
+      // still running. Acknowledge them idempotently; treating this
+      // valid oneof as unsupported terminates RunSSE and makes Cursor replay
+      // the completed user turn under a new request ID.
+      kind = "metadata";
       break;
     case "client_heartbeat":
       kind = "heartbeat";
       break;
     default:
-      if (client.texts.length) {
-        kind = "user_run";
-        for (const t of client.texts) {
-          if (isPrintableUserText(t)) texts.push(String(t).trim());
-        }
-      }
+      kind = "unknown";
   }
 
   return {
@@ -285,15 +414,25 @@ function clientKindToInbound(
     mode,
     modelHint,
     conversationId,
+    userMessageId,
+    conversationTurnCount,
+    conversationState,
     execResult,
+    execControl,
     interactionResult,
     contentParts:
-      client.contentParts?.length
-        ? client.contentParts
-        : texts.length
-          ? texts.map((text) => ({ type: "text", text }))
-          : undefined,
-    hasImageAttachment: client.hasImageAttachment,
+      kind === "user_run"
+        ? client.contentParts?.length
+          ? client.contentParts
+          : texts.length
+            ? texts.map((text) => ({ type: "text", text }))
+            : undefined
+        : undefined,
+    hasImageAttachment: kind === "user_run" && client.hasImageAttachment,
+    conversationAction: client.conversationAction,
+    hasRequestContextPayload: client.hasRequestContextPayload,
+    hasPendingToolCalls: client.hasPendingToolCalls,
+    agentMessageField,
     protobufDecoded: true,
   };
 }
@@ -302,6 +441,8 @@ function clientKindToInbound(
 
 function detectKindFromJson(j: Record<string, unknown>): InboundKind {
   const topKind = String(j.kind || j.type || j.clientKind || "").toLowerCase();
+  if (topKind === "metadata") return "metadata";
+  if (topKind === "prewarm" || topKind === "prewarm_request") return "prewarm";
   if (
     topKind === "exec_result" ||
     topKind === "execclientmessage" ||
@@ -328,6 +469,9 @@ function detectKindFromJson(j: Record<string, unknown>): InboundKind {
     return "interaction_response";
   }
   if (topKind === "cancel" || topKind === "cancel_action") return "cancel";
+  if (topKind === "summarize" || topKind === "summarize_action") {
+    return "metadata";
+  }
 
   if (j.execClientMessage || j.exec_client_message || j.execResult || j.exec_result) {
     return "exec_result";
@@ -346,7 +490,13 @@ function detectKindFromJson(j: Record<string, unknown>): InboundKind {
   if (j.clientHeartbeat || j.client_heartbeat || j.heartbeat === true) {
     return "heartbeat";
   }
+  if (j.prewarmRequest || j.prewarm_request || j.prewarm === true) {
+    return "prewarm";
+  }
   if (j.cancel || j.cancelAction || j.cancel_action) return "cancel";
+  if (j.summarize || j.summarizeAction || j.summarize_action) {
+    return "metadata";
+  }
 
   if (
     (j.tool_call_id || j.toolCallId || j.exec_id || j.execId) &&
@@ -530,8 +680,11 @@ function parseJsonRequestId(j: Record<string, unknown>): string {
 /**
  * 本地协议实现。
  */
-export function parseRunSSEInbound(buf: Buffer): ExtractedInbound {
-  const unwrapped = unwrapRequestBody(buf);
+export function parseRunSSEInbound(
+  buf: Buffer,
+  connectContentEncoding?: string | string[],
+): ExtractedInbound {
+  const unwrapped = unwrapRequestBody(buf, connectContentEncoding);
   const empty: ExtractedInbound = {
     requestId: "",
     texts: [],
@@ -564,36 +717,63 @@ export function parseRunSSEInbound(buf: Buffer): ExtractedInbound {
  * 本地协议实现。
  * 本地协议实现。
  */
-export function parseBidiAppendInbound(buf: Buffer): ExtractedInbound {
-  const unwrapped = unwrapRequestBody(buf);
+export function parseBidiAppendInbound(
+  buf: Buffer,
+  connectContentEncoding?: string | string[],
+): ExtractedInbound {
+  const unwrapped = unwrapRequestBody(buf, connectContentEncoding);
   let requestId = "";
   let texts: string[] = [];
   let modelHint: string | undefined;
   let mode: string | undefined;
   let kind: InboundKind = "empty" as InboundKind;
   let execResult: ExecResultInbound | undefined;
+  let execControl: ExecControlInbound | undefined;
   let interactionResult: InteractionResultInbound | undefined;
   let contentParts: ChatContentPart[] | undefined;
   let hasImageAttachment = false;
+  let conversationAction: ExtractedInbound["conversationAction"];
+  let hasRequestContextPayload = false;
+  let hasPendingToolCalls = false;
   let conversationId: string | undefined;
+  let userMessageId: string | undefined;
+  let conversationTurnCount: number | undefined;
+  let conversationState: Buffer | undefined;
   let hasDataField = false;
   let protobufDecoded = false;
   let appendSeqno: number | undefined;
+  let agentMessageField: number | undefined;
   let path: ExtractedInbound["path"] = "bidi_proto";
 
   const absorbClient = (clientBuf: Buffer) => {
     const dec = decodeAgentClientMessage(clientBuf);
+    // Preserve an unsupported but syntactically valid AgentClientMessage so
+    // the handler can return Connect invalid_argument instead of a blank ACK.
+    protobufDecoded = true;
     if (dec.kind === "unknown" && !dec.texts.length) return;
     const mapped = clientKindToInbound(dec);
-    protobufDecoded = true;
     kind = mapped.kind;
     if (mapped.mode) mode = mapped.mode;
     if (mapped.modelHint) modelHint = mapped.modelHint;
     if (mapped.conversationId) conversationId = mapped.conversationId;
+    if (mapped.userMessageId) userMessageId = mapped.userMessageId;
+    if (mapped.conversationTurnCount != null) {
+      conversationTurnCount = mapped.conversationTurnCount;
+    }
+    if (mapped.conversationState?.length) {
+      conversationState = Buffer.from(mapped.conversationState);
+    }
+    if (mapped.agentMessageField != null) {
+      agentMessageField = mapped.agentMessageField;
+    }
     if (mapped.execResult) execResult = mapped.execResult;
+    if (mapped.execControl) execControl = mapped.execControl;
     if (mapped.interactionResult) interactionResult = mapped.interactionResult;
     if (mapped.contentParts?.length) contentParts = mapped.contentParts;
     hasImageAttachment ||= Boolean(mapped.hasImageAttachment);
+    if (mapped.conversationAction) conversationAction = mapped.conversationAction;
+    hasRequestContextPayload ||= Boolean(mapped.hasRequestContextPayload);
+    hasPendingToolCalls ||= Boolean(mapped.hasPendingToolCalls);
     for (const t of mapped.texts) {
       if (!texts.includes(t)) texts.push(t);
     }
@@ -604,6 +784,10 @@ export function parseBidiAppendInbound(buf: Buffer): ExtractedInbound {
   if (jTop) {
     path = "bidi_json";
     requestId = parseJsonRequestId(jTop);
+    const jsonAppendSeqno = jTop.append_seqno ?? jTop.appendSeqno;
+    if (jsonAppendSeqno != null && Number.isFinite(Number(jsonAppendSeqno))) {
+      appendSeqno = Number(jsonAppendSeqno);
+    }
     kind = detectKindFromJson(jTop);
     if (kind === "exec_result") execResult = extractExecResult(jTop);
     if (kind === "interaction_response") {
@@ -657,26 +841,34 @@ export function parseBidiAppendInbound(buf: Buffer): ExtractedInbound {
       texts: [...new Set(texts)],
       contentParts,
       hasImageAttachment,
+      conversationAction,
+      hasRequestContextPayload,
+      hasPendingToolCalls,
       modelHint,
       mode,
       kind,
       execResult,
+      execControl,
       interactionResult,
       conversationId,
+      userMessageId,
+      conversationTurnCount,
+      conversationState,
       hasDataField,
       protobufDecoded,
       appendSeqno,
+      agentMessageField,
       path,
     };
   }
 
   // ── 2) Cursor 真机主路径：protobuf BidiAppendRequest ──
   const append = decodeBidiAppendRequestProto(unwrapped);
-  if (append.ok && (append.dataHex || append.dataRaw || append.requestId)) {
+  if (append.ok && (append.dataHex || append.requestId)) {
     path = "bidi_proto";
     if (append.requestId) requestId = append.requestId;
     if (append.appendSeqno != null) appendSeqno = append.appendSeqno;
-    hasDataField = Boolean(append.dataHex || append.dataRaw);
+    hasDataField = Boolean(append.dataHex);
 
     if (append.dataHex) {
       const decoded = decodeAgentClientMessageFromHex(append.dataHex);
@@ -685,8 +877,6 @@ export function parseBidiAppendInbound(buf: Buffer): ExtractedInbound {
       } else if (!decoded.ok) {
         kind = "unknown";
       }
-    } else if (append.dataRaw) {
-      absorbClient(append.dataRaw);
     }
 
     if (kind === "unknown" || kind === "empty") {
@@ -694,6 +884,7 @@ export function parseBidiAppendInbound(buf: Buffer): ExtractedInbound {
       else if (interactionResult) kind = "interaction_response";
       else if (texts.length || contentParts?.length) kind = "user_run";
       else if (!hasDataField) kind = "empty";
+      else if (protobufDecoded) kind = "unknown";
       else kind = "empty";
     }
 
@@ -702,15 +893,23 @@ export function parseBidiAppendInbound(buf: Buffer): ExtractedInbound {
       texts: [...new Set(texts)],
       contentParts,
       hasImageAttachment,
+      conversationAction,
+      hasRequestContextPayload,
+      hasPendingToolCalls,
       modelHint,
       mode,
       kind,
       execResult,
+      execControl,
       interactionResult,
       conversationId,
+      userMessageId,
+      conversationTurnCount,
+      conversationState,
       hasDataField,
       protobufDecoded,
       appendSeqno,
+      agentMessageField,
       path,
     };
   }
@@ -726,7 +925,16 @@ export function parseBidiAppendInbound(buf: Buffer): ExtractedInbound {
     absorbClient(unwrapped);
   }
 
-  if (!texts.length && !contentParts?.length && !execResult && !interactionResult) {
+  if (
+    !texts.length &&
+    !contentParts?.length &&
+    !execResult &&
+    !execControl &&
+    !interactionResult &&
+    kind !== "summarize" &&
+    kind !== "metadata" &&
+    kind !== "prewarm"
+  ) {
     kind = "empty";
   }
 
@@ -735,15 +943,23 @@ export function parseBidiAppendInbound(buf: Buffer): ExtractedInbound {
     texts: [...new Set(texts)],
     contentParts,
     hasImageAttachment,
+    conversationAction,
+    hasRequestContextPayload,
+    hasPendingToolCalls,
     modelHint,
     mode,
     kind,
     execResult,
+    execControl,
     interactionResult,
     conversationId,
+    userMessageId,
+    conversationTurnCount,
+    conversationState,
     hasDataField,
     protobufDecoded,
     appendSeqno,
+    agentMessageField,
     path,
   };
 }
@@ -764,12 +980,17 @@ export function extractInbound(buf: Buffer): ExtractedInbound {
     bidi.texts.length ||
     bidi.contentParts?.length ||
     bidi.execResult ||
+    bidi.execControl ||
     bidi.interactionResult ||
     bidi.kind === "user_run" ||
+    bidi.kind === "prewarm" ||
     bidi.kind === "exec_result" ||
+    bidi.kind === "exec_control" ||
     bidi.kind === "interaction_response" ||
     bidi.kind === "heartbeat" ||
+    bidi.kind === "summarize" ||
     bidi.kind === "cancel" ||
+    bidi.kind === "metadata" ||
     bidi.path === "debug_json" ||
     bidi.path === "bidi_json"
   ) {

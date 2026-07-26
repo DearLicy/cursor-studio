@@ -15,7 +15,7 @@ import { mapUpstreamStatus, shouldFailover } from "../server/backend/error-map.t
 
 const plan = await dryRunProxyInject("127.0.0.1:18080");
 assert.ok(plan.settingsPath, "settingsPath");
-assert.equal(plan.proxyURL, "http:
+assert.equal(plan.proxyURL, "http://127.0.0.1:18080");
 assert.ok(typeof plan.beforeFingerprint === "string");
 assert.ok(typeof plan.afterFingerprint === "string");
 assert.ok(Array.isArray(plan.changes));
@@ -25,7 +25,7 @@ const fp2 = fingerprintSettings({ "http.proxy": "http://x" });
 const fp3 = fingerprintSettings({ "http.proxy": "http://y" });
 assert.equal(fp1, fp2);
 assert.notEqual(fp1, fp3);
-assert.equal(proxyUrlFromListenAddr("127.0.0.1:1"), "http:
+assert.equal(proxyUrlFromListenAddr("127.0.0.1:1"), "http://127.0.0.1:1");
 
 // backup writes under CURSOR_STUDIO_HOME if set
 const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "studio-backup-"));

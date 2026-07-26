@@ -3,7 +3,13 @@
  * 当前在 backend 进程内执行，结果回灌模型；同时经 SSE 发出工具事件供 UI。
  */
 import fs from "node:fs/promises";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EXECUTABLE_TOOLS } from "./tool-catalog";
@@ -23,18 +29,24 @@ export type ToolExecResult = {
   content: string;
 };
 
-type TodoItem = {
+export type RuntimeTodoItem = {
   id: string;
-  content?: string;
+  content: string;
   status?: "pending" | "in_progress" | "completed" | "cancelled";
+  created_at?: number;
+  updated_at?: number;
+  dependencies?: string[];
 };
 
 type BgShell = {
   shellId: string;
+  toolCallId: string;
   command: string;
   cwd: string;
   startedAt: number;
   done: boolean;
+  forcedBackground: boolean;
+  forcedBackgroundAt?: number;
   exitCode: number | null;
   stdout: string;
   stderr: string;
@@ -42,7 +54,7 @@ type BgShell = {
   child?: ChildProcessWithoutNullStreams;
 };
 
-const todosByRequest = new Map<string, TodoItem[]>();
+const todosByStateKey = new Map<string, RuntimeTodoItem[]>();
 /** requestId → shellId → job */
 const shellsByRequest = new Map<string, Map<string, BgShell>>();
 let shellSeq = 0;
@@ -63,11 +75,57 @@ export function resolveWorkspaceRoot(hint?: string): string {
   return process.cwd();
 }
 
+function isPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+  );
+}
+
+function realpathOrResolved(candidate: string): string {
+  try {
+    return realpathSync.native(candidate);
+  } catch {
+    return path.resolve(candidate);
+  }
+}
+
+function nearestExistingPath(candidate: string): string {
+  let current = candidate;
+  while (!existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return current;
+}
+
 function resolvePath(workspace: string, p: string): string {
+  const root = path.resolve(workspace);
   const raw = String(p || "").trim();
-  if (!raw) return workspace;
-  if (path.isAbsolute(raw)) return path.normalize(raw);
-  return path.normalize(path.join(workspace, raw));
+  const candidate = path.resolve(root, raw || ".");
+  if (!isPathInside(root, candidate)) {
+    throw new Error(`path escapes workspace: ${raw || candidate}`);
+  }
+
+  // A lexical prefix check is insufficient when an in-workspace symlink targets
+  // a location outside the selected project. Validate the closest real ancestor,
+  // and the final target when it already exists.
+  const realRoot = realpathOrResolved(root);
+  const ancestor = nearestExistingPath(candidate);
+  const realAncestor = realpathOrResolved(ancestor);
+  if (!isPathInside(realRoot, realAncestor)) {
+    throw new Error(`path resolves outside workspace: ${raw || candidate}`);
+  }
+  if (existsSync(candidate)) {
+    const realTarget = realpathOrResolved(candidate);
+    if (!isPathInside(realRoot, realTarget)) {
+      throw new Error(`path resolves outside workspace: ${raw || candidate}`);
+    }
+    return realTarget;
+  }
+  return candidate;
 }
 
 function truncate(s: string, max = MAX_RESULT): string {
@@ -85,6 +143,21 @@ function parseArgs(raw: string): Record<string, unknown> {
     /* ignore */
   }
   return {};
+}
+
+function toolContentIndicatesFailure(content: string): boolean {
+  if (content.startsWith("Error:")) return true;
+  try {
+    const parsed = JSON.parse(content);
+    return Boolean(
+      parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        (parsed as Record<string, unknown>).ok === false,
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function execRead(workspace: string, args: Record<string, unknown>): Promise<string> {
@@ -112,6 +185,119 @@ async function execWrite(workspace: string, args: Record<string, unknown>): Prom
   return `Wrote ${contents.length} bytes to ${file}`;
 }
 
+function readStringArg(
+  args: Record<string, unknown>,
+  ...names: string[]
+): { found: boolean; valid: boolean; value: string } {
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(args, name)) {
+      return {
+        found: true,
+        valid: typeof args[name] === "string",
+        value: typeof args[name] === "string" ? args[name] : "",
+      };
+    }
+  }
+  return { found: false, valid: true, value: "" };
+}
+
+async function atomicWriteText(file: string, contents: string): Promise<void> {
+  const stat = await fs.stat(file);
+  const directory = path.dirname(file);
+  const temp = path.join(
+    directory,
+    `.${path.basename(file)}.${process.pid}.${Date.now()}.${Math.random()
+      .toString(16)
+      .slice(2)}.tmp`,
+  );
+  try {
+    await fs.writeFile(temp, contents, { encoding: "utf8", mode: stat.mode });
+    await fs.chmod(temp, stat.mode);
+    await fs.rename(temp, file);
+  } finally {
+    await fs.unlink(temp).catch(() => undefined);
+  }
+}
+
+async function execPatchEdit(
+  workspace: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  const pathArg = readStringArg(args, "path", "file_path", "filePath");
+  const oldArg = readStringArg(args, "old_string", "oldString");
+  const newArg = readStringArg(args, "new_string", "newString");
+  const replaceAllRaw = args.replace_all ?? args.replaceAll;
+
+  const fail = (error: string, extra?: Record<string, unknown>) =>
+    JSON.stringify({ ok: false, error, ...extra });
+
+  if (!pathArg.found || !pathArg.valid || !pathArg.value.trim()) {
+    return fail("PatchEdit path must be a non-empty string");
+  }
+  if (!oldArg.found || !oldArg.valid || !oldArg.value) {
+    return fail("PatchEdit old_string must be a non-empty string");
+  }
+  if (!newArg.found || !newArg.valid) {
+    return fail("PatchEdit new_string must be a string; an empty string is valid");
+  }
+  if (replaceAllRaw !== undefined && typeof replaceAllRaw !== "boolean") {
+    return fail("PatchEdit replace_all must be a boolean");
+  }
+
+  let file: string;
+  try {
+    file = resolvePath(workspace, pathArg.value);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+  if (!existsSync(file)) return fail("PatchEdit file not found", { path: file });
+  const stat = statSync(file);
+  if (stat.isDirectory()) return fail("PatchEdit path is a directory", { path: file });
+
+  let before: string;
+  try {
+    before = await fs.readFile(file, "utf8");
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error), { path: file });
+  }
+  let matches = 0;
+  let from = 0;
+  while (true) {
+    const next = before.indexOf(oldArg.value, from);
+    if (next < 0) break;
+    matches += 1;
+    from = next + oldArg.value.length;
+  }
+  if (matches === 0) {
+    return fail("PatchEdit old_string was not found", { path: file });
+  }
+  const replaceAll = replaceAllRaw === true;
+  if (matches > 1 && !replaceAll) {
+    return fail("PatchEdit old_string is not unique", {
+      path: file,
+      occurrences: matches,
+      hint: "Set replace_all to true only when every occurrence should change.",
+    });
+  }
+
+  const after = replaceAll
+    ? before.split(oldArg.value).join(newArg.value)
+    : before.replace(oldArg.value, newArg.value);
+  try {
+    await atomicWriteText(file, after);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error), { path: file });
+  }
+  return JSON.stringify({
+    ok: true,
+    path: file,
+    replacements: replaceAll ? matches : 1,
+    bytes_before: Buffer.byteLength(before, "utf8"),
+    bytes_after: Buffer.byteLength(after, "utf8"),
+    message: "PatchEdit applied",
+  });
+}
+
 async function execDelete(workspace: string, args: Record<string, unknown>): Promise<string> {
   const file = resolvePath(workspace, String(args.path || ""));
   if (!existsSync(file)) return `File already absent: ${file}`;
@@ -120,12 +306,17 @@ async function execDelete(workspace: string, args: Record<string, unknown>): Pro
 }
 
 function walkGlob(
+  workspace: string,
   root: string,
   pattern: string,
   acc: string[],
   depth: number,
+  visited = new Set<string>(),
 ): void {
   if (depth < 0 || acc.length >= MAX_GLOB) return;
+  const realRoot = realpathOrResolved(root);
+  if (visited.has(realRoot)) return;
+  visited.add(realRoot);
   let entries: string[];
   try {
     entries = readdirSync(root);
@@ -140,7 +331,13 @@ function walkGlob(
 
   for (const name of entries) {
     if (name === "node_modules" || name === ".git" || name === "dist") continue;
-    const full = path.join(root, name);
+    let full: string;
+    try {
+      full = resolvePath(workspace, path.join(root, name));
+    } catch {
+      // Do not follow a symlink that leaves the selected workspace.
+      continue;
+    }
     let st;
     try {
       st = statSync(full);
@@ -148,7 +345,7 @@ function walkGlob(
       continue;
     }
     if (st.isDirectory()) {
-      walkGlob(full, pattern, acc, depth - 1);
+      walkGlob(workspace, full, pattern, acc, depth - 1, visited);
       continue;
     }
     const base = name.toLowerCase();
@@ -185,7 +382,18 @@ async function execGlob(workspace: string, args: Record<string, unknown>): Promi
     String(args.target_directory || args.path || workspace),
   );
   const acc: string[] = [];
-  walkGlob(root, pattern, acc, 12);
+  if (existsSync(root) && statSync(root).isFile()) {
+    const base = path.basename(root);
+    const simplePattern = pattern.replace(/^\*\*\//, "");
+    const hit =
+      simplePattern === "*" ||
+      simplePattern === "**/*" ||
+      (simplePattern.startsWith("*.") && base.toLowerCase().endsWith(simplePattern.slice(1).toLowerCase())) ||
+      base.toLowerCase().includes(simplePattern.replaceAll("*", "").toLowerCase());
+    if (hit) acc.push(root);
+  } else {
+    walkGlob(workspace, root, pattern, acc, 12);
+  }
   if (!acc.length) return `No files matched ${pattern} under ${root}`;
   return truncate(acc.join("\n"));
 }
@@ -204,9 +412,13 @@ async function execGrep(workspace: string, args: Record<string, unknown>): Promi
   }
   const globFilter = args.glob ? String(args.glob).toLowerCase() : "";
   const hits: string[] = [];
+  const visited = new Set<string>();
 
   const walk = (dir: string, depth: number) => {
     if (depth < 0 || hits.length >= headLimit) return;
+    const realDir = realpathOrResolved(dir);
+    if (visited.has(realDir)) return;
+    visited.add(realDir);
     let entries: string[];
     try {
       entries = readdirSync(dir);
@@ -216,7 +428,12 @@ async function execGrep(workspace: string, args: Record<string, unknown>): Promi
     for (const name of entries) {
       if (hits.length >= headLimit) return;
       if (name === "node_modules" || name === ".git" || name === "dist") continue;
-      const full = path.join(dir, name);
+      let full: string;
+      try {
+        full = resolvePath(workspace, path.join(dir, name));
+      } catch {
+        continue;
+      }
       let st;
       try {
         st = statSync(full);
@@ -288,6 +505,257 @@ async function execLs(workspace: string, args: Record<string, unknown>): Promise
   return truncate(lines.join("\n") || "(empty)");
 }
 
+type LintDiagnostic = {
+  path?: string;
+  line?: number;
+  column?: number;
+  end_line?: number;
+  end_column?: number;
+  severity: "error" | "warning";
+  code?: string;
+  message: string;
+};
+
+function relativeWorkspacePath(workspace: string, candidate: string): string | undefined {
+  const resolved = path.resolve(workspace, candidate);
+  if (!isPathInside(path.resolve(workspace), resolved)) return undefined;
+  return path.relative(workspace, resolved) || ".";
+}
+
+function findWorkspaceTool(workspace: string, relativePath: string): string | undefined {
+  try {
+    const candidate = resolvePath(workspace, relativePath);
+    return existsSync(candidate) ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function workspaceHasEslintConfig(workspace: string): boolean {
+  const configNames = [
+    "eslint.config.js",
+    "eslint.config.mjs",
+    "eslint.config.cjs",
+    "eslint.config.ts",
+    ".eslintrc",
+    ".eslintrc.js",
+    ".eslintrc.cjs",
+    ".eslintrc.json",
+    ".eslintrc.yaml",
+    ".eslintrc.yml",
+  ];
+  if (configNames.some((name) => existsSync(path.join(workspace, name)))) return true;
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(workspace, "package.json"), "utf8"));
+    return Boolean(pkg?.eslintConfig);
+  } catch {
+    return false;
+  }
+}
+
+async function runNodeTool(
+  workspace: string,
+  script: string,
+  args: string[],
+  timeoutMs = 60_000,
+): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [script, ...args], {
+      cwd: workspace,
+      env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (result: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish({ exitCode: null, stdout, stderr, timedOut: true });
+    }, timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout = appendBuf(stdout, chunk.toString("utf8"), MAX_RESULT);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = appendBuf(stderr, chunk.toString("utf8"), MAX_RESULT);
+    });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (exitCode) => {
+      finish({ exitCode, stdout, stderr, timedOut: false });
+    });
+  });
+}
+
+function lintSummary(diagnostics: LintDiagnostic[]) {
+  return {
+    errors: diagnostics.filter((item) => item.severity === "error").length,
+    warnings: diagnostics.filter((item) => item.severity === "warning").length,
+  };
+}
+
+function parseEslintDiagnostics(workspace: string, output: string): LintDiagnostic[] {
+  let records: Array<Record<string, unknown>>;
+  try {
+    const parsed = JSON.parse(output);
+    if (!Array.isArray(parsed)) return [];
+    records = parsed.filter(
+      (item): item is Record<string, unknown> => Boolean(item) && typeof item === "object",
+    );
+  } catch {
+    return [];
+  }
+
+  const diagnostics: LintDiagnostic[] = [];
+  for (const record of records) {
+    const absolutePath = String(record.filePath || "");
+    const relativePath = absolutePath ? relativeWorkspacePath(workspace, absolutePath) : undefined;
+    if (absolutePath && !relativePath) continue;
+    const messages = Array.isArray(record.messages) ? record.messages : [];
+    for (const item of messages) {
+      if (!item || typeof item !== "object") continue;
+      const message = item as Record<string, unknown>;
+      diagnostics.push({
+        path: relativePath,
+        line: Number(message.line || 0) || undefined,
+        column: Number(message.column || 0) || undefined,
+        end_line: Number(message.endLine || 0) || undefined,
+        end_column: Number(message.endColumn || 0) || undefined,
+        severity: Number(message.severity || 2) === 1 ? "warning" : "error",
+        code: typeof message.ruleId === "string" ? message.ruleId : undefined,
+        message: String(message.message || "ESLint diagnostic"),
+      });
+    }
+  }
+  return diagnostics;
+}
+
+function parseTypeScriptDiagnostics(workspace: string, output: string): LintDiagnostic[] {
+  const diagnostics: LintDiagnostic[] = [];
+  const lines = output.split(/\r?\n/);
+  const filePattern = /^(.*)\((\d+),(\d+)\):\s*(error|warning)\s+(TS\d+):\s*(.*)$/i;
+  const globalPattern = /^(error|warning)\s+(TS\d+):\s*(.*)$/i;
+  for (const line of lines) {
+    const fileMatch = line.match(filePattern);
+    if (fileMatch) {
+      const relativePath = relativeWorkspacePath(workspace, fileMatch[1]);
+      if (!relativePath) continue;
+      diagnostics.push({
+        path: relativePath,
+        line: Number(fileMatch[2]),
+        column: Number(fileMatch[3]),
+        severity: fileMatch[4].toLowerCase() === "warning" ? "warning" : "error",
+        code: fileMatch[5],
+        message: fileMatch[6],
+      });
+      continue;
+    }
+    const globalMatch = line.match(globalPattern);
+    if (globalMatch) {
+      diagnostics.push({
+        severity: globalMatch[1].toLowerCase() === "warning" ? "warning" : "error",
+        code: globalMatch[2],
+        message: globalMatch[3],
+      });
+    }
+  }
+  return diagnostics;
+}
+
+async function execReadLints(
+  workspace: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  const fail = (error: string, extra?: Record<string, unknown>) =>
+    JSON.stringify({ ok: false, error, ...extra });
+  if (args.paths !== undefined && !Array.isArray(args.paths)) {
+    return fail("ReadLints paths must be an array of workspace paths");
+  }
+
+  let paths: string[];
+  try {
+    paths = (Array.isArray(args.paths) ? args.paths : []).map((item) => {
+      if (typeof item !== "string" || !item.trim()) {
+        throw new Error("ReadLints paths must contain non-empty strings");
+      }
+      const resolved = resolvePath(workspace, item);
+      if (!existsSync(resolved)) throw new Error(`path not found: ${item}`);
+      return resolved;
+    });
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+
+  const eslint = findWorkspaceTool(workspace, "node_modules/eslint/bin/eslint.js");
+  const tsc = findWorkspaceTool(workspace, "node_modules/typescript/bin/tsc");
+  const tsconfig = findWorkspaceTool(workspace, "tsconfig.json");
+  let engine: "eslint" | "typescript" | "none" = "none";
+  let result: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean };
+  let diagnostics: LintDiagnostic[];
+
+  try {
+    if (eslint && workspaceHasEslintConfig(workspace)) {
+      engine = "eslint";
+      result = await runNodeTool(workspace, eslint, ["--format", "json", ...(paths.length ? paths : ["."])]);
+      diagnostics = parseEslintDiagnostics(workspace, result.stdout);
+    } else if (tsc && (tsconfig || paths.length)) {
+      engine = "typescript";
+      const tscArgs = tsconfig
+        ? ["--noEmit", "--pretty", "false", "--project", tsconfig]
+        : ["--noEmit", "--pretty", "false", ...paths];
+      result = await runNodeTool(workspace, tsc, tscArgs);
+      diagnostics = parseTypeScriptDiagnostics(workspace, `${result.stdout}\n${result.stderr}`);
+      if (paths.length) {
+        const wantedRelative = paths.map((item) => path.relative(workspace, item));
+        diagnostics = diagnostics.filter((diagnostic) => {
+          const diagnosticPath = diagnostic.path;
+          if (!diagnosticPath) return true;
+          return wantedRelative.some((wanted) => {
+            if (!wanted || wanted === ".") return true;
+            const normalizedWanted = wanted.replace(/[\\/]+/g, path.sep);
+            const normalizedPath = diagnosticPath.replace(/[\\/]+/g, path.sep);
+            return (
+              normalizedPath === normalizedWanted ||
+              normalizedPath.startsWith(`${normalizedWanted}${path.sep}`)
+            );
+          });
+        });
+      }
+    } else {
+      return JSON.stringify({
+        ok: true,
+        engine,
+        diagnostics: [],
+        summary: { errors: 0, warnings: 0 },
+        message: "No installed workspace ESLint configuration or TypeScript project was found.",
+      });
+    }
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error), { engine });
+  }
+
+  if (result.timedOut) {
+    return fail("ReadLints timed out", { engine, timeout_ms: 60_000 });
+  }
+  return JSON.stringify({
+    ok: true,
+    engine,
+    diagnostics: diagnostics.slice(0, 500),
+    summary: lintSummary(diagnostics),
+    exit_code: result.exitCode,
+    output: truncate(`${result.stdout}\n${result.stderr}`.trim(), 16_000),
+  });
+}
+
 function getShellMap(requestId: string): Map<string, BgShell> {
   let m = shellsByRequest.get(requestId);
   if (!m) {
@@ -295,6 +763,13 @@ function getShellMap(requestId: string): Map<string, BgShell> {
     shellsByRequest.set(requestId, m);
   }
   return m;
+}
+
+function findShellByToolCallId(requestId: string, toolCallId: string): BgShell | undefined {
+  for (const job of getShellMap(requestId).values()) {
+    if (job.toolCallId === toolCallId) return job;
+  }
+  return undefined;
 }
 
 function appendBuf(prev: string, chunk: string, max = MAX_SHELL_BUF): string {
@@ -305,6 +780,7 @@ function appendBuf(prev: string, chunk: string, max = MAX_SHELL_BUF): string {
 
 function spawnShell(
   requestId: string,
+  toolCallId: string,
   command: string,
   cwd: string,
 ): BgShell {
@@ -316,10 +792,12 @@ function spawnShell(
 
   const job: BgShell = {
     shellId,
+    toolCallId,
     command,
     cwd,
     startedAt: Date.now(),
     done: false,
+    forcedBackground: false,
     exitCode: null,
     stdout: "",
     stderr: "",
@@ -360,14 +838,14 @@ async function waitJob(
   job: BgShell,
   blockUntilMs: number,
   pattern?: string,
-): Promise<{ timedOut: boolean; matched: boolean; match?: string }> {
+): Promise<{ timedOut: boolean; matched: boolean; forcedBackground: boolean; match?: string }> {
   const deadline = Date.now() + Math.max(0, blockUntilMs);
   let re: RegExp | null = null;
   if (pattern) {
     try {
       re = new RegExp(pattern);
     } catch {
-      return { timedOut: false, matched: false };
+      return { timedOut: false, matched: false, forcedBackground: false };
     }
   }
 
@@ -375,10 +853,13 @@ async function waitJob(
     const combined = job.stdout + job.stderr;
     if (re) {
       const m = combined.match(re);
-      if (m) return { timedOut: false, matched: true, match: m[0] };
+      if (m) return { timedOut: false, matched: true, forcedBackground: false, match: m[0] };
     }
-    if (job.done) return { timedOut: false, matched: false };
-    if (Date.now() >= deadline) return { timedOut: true, matched: false };
+    if (job.done) return { timedOut: false, matched: false, forcedBackground: false };
+    if (job.forcedBackground) {
+      return { timedOut: false, matched: false, forcedBackground: true };
+    }
+    if (Date.now() >= deadline) return { timedOut: true, matched: false, forcedBackground: false };
     await sleep(Math.min(200, Math.max(20, deadline - Date.now())));
   }
 }
@@ -419,12 +900,15 @@ function snapshotAwait(
     regex_match: opts.match,
     message: opts.message,
     command: job.command,
+    tool_call_id: job.toolCallId,
+    forced_background: job.forcedBackground,
   });
 }
 
 async function execShell(
   workspace: string,
   requestId: string,
+  toolCallId: string,
   args: Record<string, unknown>,
 ): Promise<string> {
   const command = String(args.command || "").trim();
@@ -436,7 +920,7 @@ async function execShell(
       ? 30_000
       : Math.max(0, Number(blockRaw));
 
-  const job = spawnShell(requestId, command, cwd);
+  const job = spawnShell(requestId, toolCallId, command, cwd);
 
   // block_until_ms=0 → 立即后台
   if (blockUntil === 0) {
@@ -451,11 +935,12 @@ async function execShell(
 
   const timeout = Math.min(120_000, Math.max(1000, blockUntil));
   const waited = await waitJob(job, timeout);
-  if (!job.done || waited.timedOut) {
+  if (waited.forcedBackground || !job.done || waited.timedOut) {
     return JSON.stringify({
       shell_id: job.shellId,
       status: job.done ? "completed" : "backgrounded",
       timed_out: waited.timedOut && !job.done,
+      forced_background: waited.forcedBackground,
       exit_code: job.exitCode,
       stdout: job.stdout.slice(-AWAIT_OUTPUT_LIMIT),
       stderr: job.stderr.slice(-AWAIT_OUTPUT_LIMIT),
@@ -467,12 +952,86 @@ async function execShell(
 
   const out = [job.stdout, job.stderr].filter(Boolean).join("\n").trim();
   if (job.exitCode && job.exitCode !== 0) {
-    return truncate(
-      [out, job.error, `exit=${job.exitCode}`].filter(Boolean).join("\n") ||
-        "shell failed",
-    );
+    return JSON.stringify({
+      ok: false,
+      shell_id: job.shellId,
+      exit_code: job.exitCode,
+      stdout: job.stdout.slice(-AWAIT_OUTPUT_LIMIT),
+      stderr: job.stderr.slice(-AWAIT_OUTPUT_LIMIT),
+      error: job.error || out || `shell exited with code ${job.exitCode}`,
+    });
   }
   return truncate(out || "(no output)");
+}
+
+async function execWriteShellStdin(
+  requestId: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  const shellId = String(args.shell_id || args.shellId || "").trim();
+  const chars = args.chars;
+  const fail = (error: string, extra?: Record<string, unknown>) =>
+    JSON.stringify({ ok: false, error, ...extra });
+  if (!shellId) return fail("WriteShellStdin shell_id is required");
+  if (typeof chars !== "string") return fail("WriteShellStdin chars must be a string");
+
+  const job = getShellMap(requestId).get(shellId);
+  if (!job) return fail("unknown shell_id", { shell_id: shellId });
+  if (job.done) {
+    return fail("shell has already completed", {
+      shell_id: shellId,
+      exit_code: job.exitCode,
+    });
+  }
+  const stdin = job.child?.stdin;
+  if (!stdin || stdin.destroyed || !stdin.writable) {
+    return fail("shell standard input is not writable", { shell_id: shellId });
+  }
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      stdin.write(chars, "utf8", (error) => (error ? reject(error) : resolve()));
+    });
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error), { shell_id: shellId });
+  }
+
+  return JSON.stringify({
+    ok: true,
+    shell_id: shellId,
+    chars_written: Buffer.byteLength(chars, "utf8"),
+    status: "running",
+  });
+}
+
+function execForceBackgroundShell(
+  requestId: string,
+  args: Record<string, unknown>,
+): string {
+  const toolCallId = String(args.tool_call_id || args.toolCallId || "").trim();
+  const fail = (error: string, extra?: Record<string, unknown>) =>
+    JSON.stringify({ ok: false, error, ...extra });
+  if (!toolCallId) return fail("ForceBackgroundShell tool_call_id is required");
+
+  const job = findShellByToolCallId(requestId, toolCallId);
+  if (!job) return fail("no shell found for tool_call_id", { tool_call_id: toolCallId });
+  if (job.done) {
+    return fail("shell has already completed", {
+      tool_call_id: toolCallId,
+      shell_id: job.shellId,
+      exit_code: job.exitCode,
+    });
+  }
+
+  job.forcedBackground = true;
+  job.forcedBackgroundAt = Date.now();
+  return JSON.stringify({
+    ok: true,
+    shell_id: job.shellId,
+    tool_call_id: toolCallId,
+    status: "backgrounded",
+    message: "shell moved to the background",
+  });
 }
 
 async function execAwaitShell(
@@ -548,22 +1107,154 @@ async function execWebFetch(args: Record<string, unknown>): Promise<string> {
   }
 }
 
+function runtimeTodoStatus(value: unknown): RuntimeTodoItem["status"] {
+  if (typeof value === "number") {
+    if (value === 2) return "in_progress";
+    if (value === 3) return "completed";
+    if (value === 4) return "cancelled";
+    return "pending";
+  }
+  switch (String(value || "").trim().toLowerCase().replaceAll("-", "_")) {
+    case "in_progress":
+    case "inprogress":
+    case "todo_status_in_progress":
+      return "in_progress";
+    case "completed":
+    case "complete":
+    case "todo_status_completed":
+      return "completed";
+    case "cancelled":
+    case "canceled":
+    case "todo_status_cancelled":
+      return "cancelled";
+    default:
+      return "pending";
+  }
+}
+
+function cloneRuntimeTodo(item: RuntimeTodoItem): RuntimeTodoItem {
+  return {
+    ...item,
+    dependencies: item.dependencies ? [...item.dependencies] : undefined,
+  };
+}
+
+function runtimeTodoFromUnknown(
+  value: unknown,
+  fallbackTime: number,
+): RuntimeTodoItem | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const id = String(raw.id || "").trim();
+  const content = String(raw.content || "").trim();
+  if (!id) return undefined;
+  const createdAt = Number(raw.created_at ?? raw.createdAt);
+  const updatedAt = Number(raw.updated_at ?? raw.updatedAt);
+  return {
+    id,
+    content,
+    status: runtimeTodoStatus(raw.status),
+    created_at: Number.isFinite(createdAt) && createdAt > 0 ? Math.floor(createdAt) : fallbackTime,
+    updated_at: Number.isFinite(updatedAt) && updatedAt > 0
+      ? Math.floor(updatedAt)
+      : Number.isFinite(createdAt) && createdAt > 0
+        ? Math.floor(createdAt)
+        : fallbackTime,
+    dependencies: Array.isArray(raw.dependencies)
+      ? raw.dependencies.map(String).map((item) => item.trim()).filter(Boolean)
+      : [],
+  };
+}
+
+export function synchronizeTodoState(
+  stateKey: string,
+  todos: readonly unknown[],
+): void {
+  const key = String(stateKey || "default").trim() || "default";
+  const now = Date.now();
+  todosByStateKey.set(
+    key,
+    todos
+      .map((todo) => runtimeTodoFromUnknown(todo, now))
+      .filter((todo): todo is RuntimeTodoItem => Boolean(todo?.content))
+      .map(cloneRuntimeTodo),
+  );
+}
+
+function isTerminalRuntimeTodo(todo: RuntimeTodoItem): boolean {
+  return todo.status === "completed" || todo.status === "cancelled";
+}
+
 function execTodoWrite(
-  requestId: string,
+  stateKey: string,
   args: Record<string, unknown>,
 ): string {
-  const merge = args.merge !== false;
-  const incoming = Array.isArray(args.todos) ? (args.todos as TodoItem[]) : [];
-  let list = todosByRequest.get(requestId) || [];
-  if (!merge) list = [];
-  for (const item of incoming) {
-    if (!item?.id) continue;
-    const idx = list.findIndex((t) => t.id === item.id);
-    if (idx >= 0) list[idx] = { ...list[idx], ...item };
-    else list.push({ ...item });
+  const now = Date.now();
+  const rawIncoming = Array.isArray(args.todos) ? args.todos : [];
+  const incoming = rawIncoming
+    .map((todo) => runtimeTodoFromUnknown(todo, now))
+    .filter((todo): todo is RuntimeTodoItem => Boolean(todo));
+  if (incoming.length !== rawIncoming.length) {
+    return "Error: every todo requires a non-empty id";
   }
-  todosByRequest.set(requestId, list);
-  return truncate(JSON.stringify({ todos: list }, null, 2));
+
+  const key = String(stateKey || "default").trim() || "default";
+  const existing = (todosByStateKey.get(key) || []).map(cloneRuntimeTodo);
+  const mergeSet = Object.prototype.hasOwnProperty.call(args, "merge");
+  const incomingIds = new Set(incoming.map((todo) => todo.id));
+  const missingActive = existing
+    .filter((todo) => !isTerminalRuntimeTodo(todo) && !incomingIds.has(todo.id))
+    .map((todo) => todo.id)
+    .sort();
+  const omittedContent = incoming.some((todo) => !todo.content);
+  const merge = args.merge === true || (
+    !mergeSet && existing.length > 0 && (missingActive.length > 0 || omittedContent)
+  );
+
+  let list: RuntimeTodoItem[];
+  if (merge) {
+    list = existing;
+    const indexById = new Map(list.map((todo, index) => [todo.id, index]));
+    for (let index = 0; index < rawIncoming.length; index += 1) {
+      const raw = rawIncoming[index] as Record<string, unknown>;
+      const update = incoming[index];
+      const currentIndex = indexById.get(update.id);
+      if (currentIndex == null) {
+        if (!update.content) {
+          return `Error: todo content is required for new todo ${update.id}`;
+        }
+        indexById.set(update.id, list.length);
+        list.push(update);
+        continue;
+      }
+      const current = list[currentIndex];
+      const content = String(raw.content || "").trim();
+      list[currentIndex] = {
+        ...current,
+        ...(content ? { content } : {}),
+        ...(raw.status != null ? { status: runtimeTodoStatus(raw.status) } : {}),
+        ...(Array.isArray(raw.dependencies) && raw.dependencies.length
+          ? { dependencies: raw.dependencies.map(String).map((item) => item.trim()).filter(Boolean) }
+          : {}),
+        updated_at: now,
+      };
+    }
+  } else {
+    if (incoming.some((todo) => !todo.content)) {
+      return "Error: todo content is required";
+    }
+    if (missingActive.length > 0) {
+      return `Error: replacement omitted active todo ids: ${missingActive.join(", ")}`;
+    }
+    list = incoming;
+  }
+
+  todosByStateKey.set(key, list.map(cloneRuntimeTodo));
+  return truncate(JSON.stringify({
+    todos: list,
+    total_count: list.length,
+    was_merge: merge,
+  }, null, 2));
 }
 
 /**
@@ -646,7 +1337,7 @@ export async function executeCallMcpLocal(
 
 export async function executeTool(
   invocation: ToolInvocation,
-  opts?: { workspaceRoot?: string; requestId?: string },
+  opts?: { workspaceRoot?: string; requestId?: string; stateKey?: string },
 ): Promise<ToolExecResult> {
   const workspace = resolveWorkspaceRoot(opts?.workspaceRoot);
   const requestId = opts?.requestId || "default";
@@ -673,6 +1364,12 @@ export async function executeTool(
       case "Read":
         content = await execRead(workspace, args);
         break;
+      case "PatchEdit":
+        content = await execPatchEdit(workspace, args);
+        break;
+      case "ReadLints":
+        content = await execReadLints(workspace, args);
+        break;
       case "Write":
         content = await execWrite(workspace, args);
         break;
@@ -689,21 +1386,27 @@ export async function executeTool(
         content = await execLs(workspace, args);
         break;
       case "Shell":
-        content = await execShell(workspace, requestId, args);
+        content = await execShell(workspace, requestId, invocation.id, args);
         break;
       case "AwaitShell":
         content = await execAwaitShell(requestId, args);
+        break;
+      case "WriteShellStdin":
+        content = await execWriteShellStdin(requestId, args);
+        break;
+      case "ForceBackgroundShell":
+        content = execForceBackgroundShell(requestId, args);
         break;
       case "WebFetch":
         content = await execWebFetch(args);
         break;
       case "TodoWrite":
-        content = execTodoWrite(requestId, args);
+        content = execTodoWrite(opts?.stateKey || requestId, args);
         break;
       default:
-        content = `Unsupported tool: ${name}`;
+        content = `Error: Unsupported tool: ${name}`;
     }
-    const ok = !content.startsWith("Error:");
+    const ok = !toolContentIndicatesFailure(content);
     return { callId: invocation.id, name, ok, content };
   } catch (e) {
     return {
@@ -717,7 +1420,7 @@ export async function executeTool(
 
 export async function executeTools(
   invocations: ToolInvocation[],
-  opts?: { workspaceRoot?: string; requestId?: string },
+  opts?: { workspaceRoot?: string; requestId?: string; stateKey?: string },
 ): Promise<ToolExecResult[]> {
   const results: ToolExecResult[] = [];
   for (const inv of invocations) {

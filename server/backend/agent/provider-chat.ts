@@ -3,6 +3,7 @@
  * - 流式文本 / thinking
  * - tools + tool_calls 多轮
  */
+import { createHash } from "node:crypto";
 import type { ModelProvider } from "../../config/store";
 import { DefaultCursorContextWindowTokens } from "../../runtime/defaults";
 import { getActiveSystemPrompt } from "../../workspace/prompts-store";
@@ -34,6 +35,19 @@ export type ToolCall = {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
+  /** Stateless OpenAI Responses replay metadata. */
+  openAIResponsesId?: string;
+  openAIResponsesCallId?: string;
+  openAIResponsesStatus?: string;
+};
+
+export type AssistantReasoningMetadata = {
+  reasoningContent?: string;
+  reasoningSignature?: string;
+  reasoningSignatureSource?: "anthropic" | "openai_responses" | string;
+  openAIResponsesReasoningId?: string;
+  openAIResponsesReasoningStatus?: string;
+  openAIResponsesReasoningSummary?: unknown;
 };
 
 export type ChatMessage =
@@ -47,7 +61,7 @@ export type ChatMessage =
       role: "assistant";
       content: string;
       tool_calls?: ToolCall[];
-    }
+    } & AssistantReasoningMetadata
   | {
       role: "tool";
       content: string;
@@ -69,30 +83,139 @@ export type ChatResult = {
   finishReason?: string;
   routeReason?: RouteReason;
   requestId?: string;
-};
+} & AssistantReasoningMetadata;
 
 export type StreamHandlers = {
   onText?: (delta: string) => void;
   onThinking?: (delta: string) => void;
+  /** Provider replay metadata can arrive before the stream terminates. */
+  onReasoningMetadata?: (metadata: AssistantReasoningMetadata) => void;
   onUsage?: (usage: Partial<ChatUsage>) => void;
 };
 
 export type ChatOptions = {
   tools?: ToolDefinition[];
   toolChoice?: "auto" | "none" | "required";
+  /** Internal maintenance calls such as context compression must not inherit a user prompt. */
+  includeManagedSystemPrompt?: boolean;
   /** Per-run output ceiling computed from the active context window. */
   maxCompletionTokens?: number;
   /** Studio-wide fallback used when the model and provider omit a context window. */
   globalContextWindowTokens?: number;
+  /**
+   * Keep the caller's transcript intact. The Cursor forwarding path uses this
+   * so a smaller failover model triggers model-backed compaction instead of
+   * silently dropping earlier turns before the upstream request.
+   */
+  strictContextBudget?: boolean;
+  /**
+   * Cursor Agent owns retries and error presentation. When enabled, execute
+   * exactly one request on the selected route and surface its terminal error
+   * without local retry or provider failover.
+   */
+  cursorNativeErrorBoundary?: boolean;
   /** Abort in-flight upstream fetch (client cancel / local timeout). */
   signal?: AbortSignal;
   /** Overall upstream timeout ms (default 180s). */
   timeoutMs?: number;
 };
 
+export class ProviderRequestError extends Error {
+  readonly providerId: string;
+  readonly modelID: string;
+  readonly status?: number;
+
+  constructor(
+    cause: unknown,
+    provider: Pick<ModelProvider, "id" | "modelID">,
+  ) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    super(message);
+    this.name = "ProviderRequestError";
+    this.providerId = provider.id;
+    this.modelID = provider.modelID;
+    this.status = providerErrorStatus(message);
+  }
+}
+
+class ProviderStreamEventError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderStreamEventError";
+  }
+}
+
+export function isProviderRequestError(
+  value: unknown,
+): value is ProviderRequestError {
+  return value instanceof ProviderRequestError;
+}
+
+/** Context-limit errors must reach the forwarder for model-backed recovery. */
+function isContextLimitProviderMessage(message: string): boolean {
+  const value = String(message || "");
+  const status = providerErrorStatus(value);
+  if (
+    status === 401 ||
+    status === 403 ||
+    status === 408 ||
+    status === 429 ||
+    (status != null && status >= 500)
+  ) {
+    return false;
+  }
+  if (
+    /(?:completion|output).{0,32}tokens?.{0,32}(?:limit|maximum|max|exceed)/i.test(value) ||
+    /(?:limit|maximum|max|exceed).{0,32}(?:completion|output).{0,32}tokens?/i.test(value)
+  ) {
+    return false;
+  }
+  return [
+    /context[_\s-]*(?:length|window|limit|size|exceed)/i,
+    /(?:maximum|max)[_\s-]*(?:context|input|token)/i,
+    /(?:prompt|input).{0,64}(?:too[_\s-]?long|too[_\s-]?large|exceed|limit|length)/i,
+    /(?:too[_\s-]?many|exceeds?|exceeded).{0,64}tokens?/i,
+    /tokens?.{0,64}(?:exceed|exceeded|limit|length|maximum|max)/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function providerErrorStatus(message: string): number | undefined {
+  const match = String(message || "").match(/\b([45]\d{2})\b/);
+  return match ? Number(match[1]) : undefined;
+}
+
+function attachProviderRoute(
+  error: unknown,
+  provider: Pick<ModelProvider, "id" | "modelID">,
+): ProviderRequestError {
+  if (isProviderRequestError(error)) return error;
+  return new ProviderRequestError(error, provider);
+}
+
+function streamEventError(
+  provider: string,
+  event: Record<string, unknown>,
+): ProviderStreamEventError {
+  const response = event.response as Record<string, unknown> | undefined;
+  const detail =
+    (event.error as Record<string, unknown> | undefined) ||
+    (response?.error as Record<string, unknown> | undefined) ||
+    event;
+  const values = [
+    optionalString(detail.type),
+    optionalString(detail.code),
+    optionalString(detail.status),
+    optionalString(event.request_id),
+  ].filter(Boolean);
+  const suffix = values.length ? ` (${values.join(", ")})` : "";
+  return new ProviderStreamEventError(
+    `${provider} stream error${suffix}: ${optionalString(detail.message) || "provider failed"}`,
+  );
+}
+
 
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 180_000;
-const DEFAULT_CONTEXT_AWARE_OUTPUT_TOKENS = 8192;
+const DEFAULT_CONTEXT_AWARE_OUTPUT_TOKENS = 65_536;
 
 function mergeAbortSignals(
   user?: AbortSignal,
@@ -367,15 +490,18 @@ function resolveMaxCompletionTokens(
   const configured = positiveInteger(
     p.modelSettings?.[p.modelID]?.maxCompletionTokens || p.maxCompletionTokens,
   );
+  const configuredOutputLimit = Math.min(
+    configured || DEFAULT_CONTEXT_AWARE_OUTPUT_TOKENS,
+    DEFAULT_CONTEXT_AWARE_OUTPUT_TOKENS,
+  );
   const contextBudget = positiveInteger(opts?.maxCompletionTokens);
   if (contextBudget) {
-    return Math.min(configured || DEFAULT_CONTEXT_AWARE_OUTPUT_TOKENS, contextBudget);
+    return Math.min(configuredOutputLimit, contextBudget);
   }
-  return contextBudget || configured;
+  return configuredOutputLimit;
 }
 
-const MIN_CONTEXT_SAFETY_MARGIN_TOKENS = 128;
-const MAX_CONTEXT_SAFETY_MARGIN_TOKENS = 2_048;
+const CONTEXT_SAFETY_MARGIN_TOKENS = 1_024;
 
 export type ProviderContextBudget = {
   contextWindowTokens: number;
@@ -421,13 +547,7 @@ export function resolveProviderContextBudget(
     provider,
     globalContextWindowTokens,
   );
-  const safetyMarginTokens = Math.min(
-    MAX_CONTEXT_SAFETY_MARGIN_TOKENS,
-    Math.max(
-      MIN_CONTEXT_SAFETY_MARGIN_TOKENS,
-      Math.ceil(contextWindowTokens * 0.02),
-    ),
-  );
+  const safetyMarginTokens = CONTEXT_SAFETY_MARGIN_TOKENS;
   const minimumInputTokens = Math.min(
     512,
     Math.max(64, Math.floor(contextWindowTokens / 8)),
@@ -437,12 +557,13 @@ export function resolveProviderContextBudget(
       provider.maxCompletionTokens,
   );
   const overrideMaxCompletionTokens = positiveInteger(maxCompletionTokensOverride);
-  const requestedMaxCompletionTokens =
-    configuredMaxCompletionTokens && overrideMaxCompletionTokens
-      ? Math.min(configuredMaxCompletionTokens, overrideMaxCompletionTokens)
-      : overrideMaxCompletionTokens ||
-        configuredMaxCompletionTokens ||
-        DEFAULT_CONTEXT_AWARE_OUTPUT_TOKENS;
+  const configuredOutputLimit = Math.min(
+    configuredMaxCompletionTokens || DEFAULT_CONTEXT_AWARE_OUTPUT_TOKENS,
+    DEFAULT_CONTEXT_AWARE_OUTPUT_TOKENS,
+  );
+  const requestedMaxCompletionTokens = overrideMaxCompletionTokens
+    ? Math.min(configuredOutputLimit, overrideMaxCompletionTokens)
+    : configuredOutputLimit;
   const maxCompletionTokens = Math.min(
     requestedMaxCompletionTokens,
     Math.max(1, contextWindowTokens - safetyMarginTokens - minimumInputTokens),
@@ -765,13 +886,16 @@ function estimateUsage(messages: ChatMessage[], text: string): ChatUsage {
   };
 }
 
-export function toOpenAIMessages(messages: ChatMessage[]): Record<string, unknown>[] {
+export function toOpenAIMessages(
+  messages: ChatMessage[],
+  thinkingEnabled = false,
+): Record<string, unknown>[] {
   return messages.map((m) => {
     if (m.role === "tool") {
       return {
         role: "tool",
         content: m.content,
-        tool_call_id: m.tool_call_id,
+        tool_call_id: providerToolCallId(m.tool_call_id),
         ...(m.name ? { name: m.name } : {}),
       };
     }
@@ -780,7 +904,16 @@ export function toOpenAIMessages(messages: ChatMessage[]): Record<string, unknow
         role: "assistant",
         content: m.content || (m.tool_calls?.length ? null : ""),
       };
-      if (m.tool_calls?.length) item.tool_calls = m.tool_calls;
+      if (m.reasoningContent || (thinkingEnabled && m.tool_calls?.length)) {
+        item.reasoning_content = m.reasoningContent || "";
+      }
+      if (m.tool_calls?.length) {
+        item.tool_calls = m.tool_calls.map((call) => ({
+          id: providerToolCallId(call.id),
+          type: call.type,
+          function: call.function,
+        }));
+      }
       return item;
     }
     return { role: m.role, content: openAIContentValue(m) };
@@ -806,6 +939,20 @@ export function toAnthropicPayload(messages: ChatMessage[]): {
     }
     if (m.role === "assistant") {
       const blocks: Record<string, unknown>[] = [];
+      if (m.reasoningContent?.trim()) {
+        const thinking: Record<string, unknown> = {
+          type: "thinking",
+          thinking: m.reasoningContent,
+        };
+        if (
+          m.reasoningSignature?.trim() &&
+          (!m.reasoningSignatureSource ||
+            m.reasoningSignatureSource === "anthropic")
+        ) {
+          thinking.signature = m.reasoningSignature.trim();
+        }
+        blocks.push(thinking);
+      }
       if (m.content?.trim()) {
         blocks.push({ type: "text", text: m.content });
       }
@@ -818,10 +965,35 @@ export function toAnthropicPayload(messages: ChatMessage[]): {
         }
         blocks.push({
           type: "tool_use",
-          id: tc.id,
+          id: providerToolCallId(tc.id),
           name: tc.function.name,
           input,
         });
+      }
+      if (
+        !m.content?.trim() &&
+        m.tool_calls?.length &&
+        m.reasoningContent?.trim()
+      ) {
+        const previous = out[out.length - 1];
+        const previousBlocks = Array.isArray(previous?.content)
+          ? (previous.content as Array<Record<string, unknown>>)
+          : [];
+        const previousThinking = previousBlocks[0];
+        const currentThinking = blocks[0];
+        if (
+          previous?.role === "assistant" &&
+          previousThinking?.type === "thinking" &&
+          currentThinking?.type === "thinking" &&
+          previousThinking.thinking === currentThinking.thinking &&
+          String(previousThinking.signature || "") ===
+            String(currentThinking.signature || "")
+        ) {
+          previousBlocks.push(
+            ...blocks.filter((block) => block.type !== "thinking"),
+          );
+          continue;
+        }
       }
       out.push({
         role: "assistant",
@@ -833,7 +1005,7 @@ export function toAnthropicPayload(messages: ChatMessage[]): {
       const last = out[out.length - 1];
       const block = {
         type: "tool_result",
-        tool_use_id: m.tool_call_id,
+        tool_use_id: providerToolCallId(m.tool_call_id),
         content: m.content,
       };
       if (last && last.role === "user" && Array.isArray(last.content)) {
@@ -869,16 +1041,26 @@ async function readSseStream(
       if (!t.startsWith("data:")) continue;
       const data = t.slice(5).trim();
       if (!data || data === "[DONE]") continue;
+      let event: Record<string, unknown>;
       try {
-        onEvent(JSON.parse(data) as Record<string, unknown>);
+        event = JSON.parse(data) as Record<string, unknown>;
       } catch {
         /* ignore partial */
+        continue;
       }
+      onEvent(event);
     }
   }
 }
 
-type ToolAcc = { id: string; name: string; arguments: string };
+type ToolAcc = {
+  id: string;
+  name: string;
+  arguments: string;
+  providerItemId?: string;
+  providerCallId?: string;
+  providerStatus?: string;
+};
 
 function finalizeToolAcc(map: Map<number, ToolAcc>): ToolCall[] {
   return [...map.entries()]
@@ -890,6 +1072,9 @@ function finalizeToolAcc(map: Map<number, ToolAcc>): ToolCall[] {
         name: t.name || "unknown",
         arguments: t.arguments || "{}",
       },
+      ...(t.providerItemId ? { openAIResponsesId: t.providerItemId } : {}),
+      ...(t.providerCallId ? { openAIResponsesCallId: t.providerCallId } : {}),
+      ...(t.providerStatus ? { openAIResponsesStatus: t.providerStatus } : {}),
     }))
     .filter((t) => t.function.name && t.function.name !== "unknown");
 }
@@ -920,7 +1105,7 @@ async function chatOpenAICompletions(
   const effort = resolveReasoningEffort(p, modelHint);
   const body: Record<string, unknown> = {
     model: p.modelID,
-    messages: toOpenAIMessages(messages),
+    messages: toOpenAIMessages(messages, Boolean(effort)),
     stream: true,
     stream_options: { include_usage: true },
   };
@@ -944,6 +1129,9 @@ async function chatOpenAICompletions(
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
     if (res.status === 400 || res.status === 422) {
+      if (isContextLimitProviderMessage(errText)) {
+        throw new Error(`OpenAI chat ${res.status}: ${errText.slice(0, 400)}`);
+      }
       return chatOpenAINonStream(p, messages, handlers, opts, modelHint);
     }
     throw new Error(`OpenAI chat ${res.status}: ${errText.slice(0, 400)}`);
@@ -956,12 +1144,18 @@ async function chatOpenAICompletions(
   }
 
   let text = "";
+  let reasoningContent = "";
+  let reasoningSignature = "";
+  let reasoningSignatureSource = "";
   let usage = emptyUsage();
   let finishReason = "";
   const toolMap = new Map<number, ToolAcc>();
 
   try {
     await readSseStream(res, (obj) => {
+      if (obj.type === "error" || (obj.error && typeof obj.error === "object")) {
+        throw streamEventError("OpenAI chat", obj);
+      }
       const choices = obj.choices as Array<Record<string, unknown>> | undefined;
       const delta = choices?.[0]?.delta as Record<string, unknown> | undefined;
       const content = delta?.content;
@@ -974,7 +1168,20 @@ async function chatOpenAICompletions(
           delta.reasoning_content) ||
         (typeof delta?.reasoning === "string" && delta.reasoning) ||
         "";
-      if (reasoning) handlers?.onThinking?.(reasoning);
+      if (reasoning) {
+        reasoningContent += reasoning;
+        handlers?.onThinking?.(reasoning);
+      }
+      const deltaMetadata = chatReasoningMetadata(delta);
+      if (deltaMetadata.reasoningSignature) {
+        reasoningSignature = deltaMetadata.reasoningSignature;
+        reasoningSignatureSource =
+          deltaMetadata.reasoningSignatureSource || "openai_chat";
+        notifyReasoningMetadata(handlers, {
+          reasoningSignature,
+          reasoningSignatureSource,
+        });
+      }
 
       const tcs = delta?.tool_calls as
         | Array<Record<string, unknown>>
@@ -1002,23 +1209,161 @@ async function chatOpenAICompletions(
       }
     });
   } catch (error) {
-    if (text || toolMap.size) throw error;
+    if (
+      error instanceof ProviderStreamEventError ||
+      text ||
+      toolMap.size ||
+      reasoningContent ||
+      reasoningSignature
+    ) {
+      throw error;
+    }
     return chatOpenAINonStream(p, messages, handlers, opts, modelHint);
   }
 
   const toolCalls = finalizeToolAcc(toolMap);
-  if (!text && !toolCalls.length && !usage.promptTokens) {
+  if (
+    !text &&
+    !toolCalls.length &&
+    !reasoningContent &&
+    !reasoningSignature &&
+    !usage.promptTokens
+  ) {
     return chatOpenAINonStream(p, messages, handlers, opts, modelHint);
   }
   if (!usage.promptTokens && !usage.completionTokens) {
     usage = estimateUsage(messages, text);
   }
+  const reasoningMetadata: AssistantReasoningMetadata = {
+    ...(reasoningContent ? { reasoningContent } : {}),
+    ...(reasoningSignature ? { reasoningSignature } : {}),
+    ...(reasoningSignatureSource ? { reasoningSignatureSource } : {}),
+  };
+  notifyReasoningMetadata(handlers, reasoningMetadata);
   return {
     text,
     usage,
     toolCalls: toolCalls.length ? toolCalls : undefined,
     finishReason: finishReason || (toolCalls.length ? "tool_calls" : "stop"),
+    ...reasoningMetadata,
   };
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function jsonClone(value: unknown): unknown | undefined {
+  if (value == null) return undefined;
+  try {
+    return JSON.parse(JSON.stringify(value)) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function reasoningTextFromSummary(value: unknown): string {
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (!item || typeof item !== "object" || Array.isArray(item)) return "";
+      const record = item as Record<string, unknown>;
+      return optionalString(record.text) || optionalString(record.content) || "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function chatReasoningMetadata(
+  message: Record<string, unknown> | undefined,
+): AssistantReasoningMetadata {
+  if (!message) return {};
+  const reasoningContent =
+    optionalString(message.reasoning_content) || optionalString(message.reasoning);
+  const reasoningSignature =
+    optionalString(message.reasoning_signature) || optionalString(message.signature);
+  const explicitSource = optionalString(message.reasoning_signature_source);
+  // Chat Completions has no standard signed-reasoning replay contract. Keep an
+  // explicit upstream source when present; otherwise identify the actual wire
+  // shape instead of incorrectly treating a generic signature as Anthropic.
+  const reasoningSignatureSource = reasoningSignature
+    ? explicitSource || "openai_chat"
+    : undefined;
+  return {
+    ...(reasoningContent ? { reasoningContent } : {}),
+    ...(reasoningSignature ? { reasoningSignature } : {}),
+    ...(reasoningSignatureSource ? { reasoningSignatureSource } : {}),
+  };
+}
+
+function notifyReasoningMetadata(
+  handlers: StreamHandlers | undefined,
+  metadata: AssistantReasoningMetadata,
+): void {
+  if (
+    metadata.reasoningContent ||
+    metadata.reasoningSignature ||
+    metadata.openAIResponsesReasoningId ||
+    metadata.openAIResponsesReasoningStatus ||
+    metadata.openAIResponsesReasoningSummary != null
+  ) {
+    handlers?.onReasoningMetadata?.(metadata);
+  }
+}
+
+const MAX_PROVIDER_TOOL_CALL_ID_LENGTH = 64;
+
+function shortToolCallHash(value: string, length: number): string {
+  return createHash("sha256")
+    .update(value.trim())
+    .digest("hex")
+    .slice(0, length);
+}
+
+function buildProviderToolCallId(namespace: string, raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  if (!namespace && value.length <= MAX_PROVIDER_TOOL_CALL_ID_LENGTH) {
+    return value;
+  }
+  const prefix = namespace ? `tc_${namespace}` : "tc";
+  const candidate = `${prefix}_${value}`;
+  if (candidate.length <= MAX_PROVIDER_TOOL_CALL_ID_LENGTH) return candidate;
+  const hash = shortToolCallHash(value, 12);
+  const remaining = MAX_PROVIDER_TOOL_CALL_ID_LENGTH - prefix.length - hash.length - 2;
+  return remaining > 0
+    ? `${prefix}_${hash}_${value.slice(-remaining)}`
+    : `${prefix}_${hash}`;
+}
+
+function providerToolCallId(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const separator = trimmed.indexOf("::");
+  if (separator > 0 && separator < trimmed.length - 2) {
+    const namespace = trimmed.slice(0, separator).trim();
+    const raw = trimmed.slice(separator + 2).trim();
+    if (namespace && raw) {
+      return buildProviderToolCallId(shortToolCallHash(namespace, 12), raw);
+    }
+  }
+  return buildProviderToolCallId("", trimmed);
+}
+
+function openAIResponsesProviderCallId(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const separator = trimmed.indexOf("::");
+  if (separator > 0 && separator < trimmed.length - 2) {
+    const raw = trimmed.slice(separator + 2).trim();
+    if (raw) return raw;
+  }
+  if (trimmed.startsWith("tc_")) {
+    const parts = trimmed.split("_", 3);
+    if (parts.length === 3 && parts[2]?.trim()) return parts[2].trim();
+  }
+  return providerToolCallId(trimmed);
 }
 
 /** 将 chat messages 转成 Responses API input */
@@ -1031,9 +1376,12 @@ export function toResponsesInput(messages: ChatMessage[]): {
     .map((m) => messageTextContent(m))
     .join("\n");
   const input: Array<Record<string, unknown>> = [];
+  const responseCallIds = new Map<string, string>();
+  let activeReasoningReplayKey = "";
   for (const m of messages) {
     if (m.role === "system") continue;
     if (m.role === "user") {
+      activeReasoningReplayKey = "";
       input.push({
         role: "user",
         content: responsesContentValue(m),
@@ -1041,46 +1389,68 @@ export function toResponsesInput(messages: ChatMessage[]): {
       continue;
     }
     if (m.role === "assistant") {
+      if (
+        m.reasoningSignature &&
+        m.reasoningSignatureSource === "openai_responses"
+      ) {
+        const replayKey = JSON.stringify([
+          m.reasoningSignature,
+          m.openAIResponsesReasoningId || "",
+          m.openAIResponsesReasoningStatus || "",
+          m.openAIResponsesReasoningSummary ?? null,
+        ]);
+        if (replayKey !== activeReasoningReplayKey) {
+          input.push({
+            type: "reasoning",
+            encrypted_content: m.reasoningSignature,
+            ...(m.openAIResponsesReasoningId
+              ? { id: m.openAIResponsesReasoningId }
+              : {}),
+            ...(m.openAIResponsesReasoningStatus
+              ? { status: m.openAIResponsesReasoningStatus }
+              : {}),
+            summary: m.openAIResponsesReasoningSummary ?? [],
+          });
+          activeReasoningReplayKey = replayKey;
+        }
+      }
       const content: Array<Record<string, unknown>> = [];
       if (m.content?.trim()) {
         content.push({ type: "output_text", text: m.content });
       }
+      if (content.length) {
+        input.push({ role: "assistant", content });
+      }
       // tool_calls → function_call items
       if (m.tool_calls?.length) {
         for (const tc of m.tool_calls) {
+          const callId =
+            tc.openAIResponsesCallId ||
+            openAIResponsesProviderCallId(tc.id) ||
+            openAIResponsesProviderCallId(tc.function.name);
+          responseCallIds.set(tc.id, callId);
           input.push({
             type: "function_call",
-            call_id: tc.id,
+            call_id: callId,
             name: tc.function.name,
             arguments: tc.function.arguments || "{}",
+            ...(tc.openAIResponsesId ? { id: tc.openAIResponsesId } : {}),
+            status: tc.openAIResponsesStatus || "completed",
           });
         }
-        if (content.length) {
-          input.push({ role: "assistant", content });
-        }
-        continue;
       }
-      input.push({
-        role: "assistant",
-        content: content.length
-          ? content
-          : [{ type: "output_text", text: m.content || "" }],
-      });
       continue;
     }
     if (m.role === "tool") {
+      activeReasoningReplayKey = "";
       input.push({
         type: "function_call_output",
-        call_id: m.tool_call_id,
+        call_id:
+          responseCallIds.get(m.tool_call_id) ||
+          openAIResponsesProviderCallId(m.tool_call_id),
         output: m.content,
       });
     }
-  }
-  if (!input.length) {
-    input.push({
-      role: "user",
-      content: [{ type: "input_text", text: "Hello" }],
-    });
   }
   return { instructions, input };
 }
@@ -1100,6 +1470,113 @@ function toResponsesTools(
 }
 
 /** OpenAI Responses API（/v1/responses） */
+function openAIResponsesToolCall(item: Record<string, unknown>): ToolCall | undefined {
+  const name = optionalString(item.name);
+  if (!name) return undefined;
+  const providerItemId = optionalString(item.id);
+  const providerCallId = optionalString(item.call_id);
+  const id =
+    providerCallId ||
+    providerItemId ||
+    `call_${Math.random().toString(36).slice(2, 10)}`;
+  const providerStatus = optionalString(item.status);
+  return {
+    id,
+    type: "function",
+    function: {
+      name,
+      arguments:
+        typeof item.arguments === "string"
+          ? item.arguments
+          : JSON.stringify(item.arguments || {}),
+    },
+    ...(providerItemId ? { openAIResponsesId: providerItemId } : {}),
+    ...(providerCallId ? { openAIResponsesCallId: providerCallId } : {}),
+    ...(providerStatus ? { openAIResponsesStatus: providerStatus } : {}),
+  };
+}
+
+function openAIResponsesJsonResult(
+  data: Record<string, unknown>,
+  handlers?: StreamHandlers,
+): ChatResult {
+  const output = Array.isArray(data.output)
+    ? (data.output as Array<Record<string, unknown>>)
+    : [];
+  let text = optionalString(data.output_text) || "";
+  let reasoningContent = "";
+  let reasoningSignature = "";
+  let openAIResponsesReasoningId = "";
+  let openAIResponsesReasoningStatus = "";
+  let openAIResponsesReasoningSummary: unknown;
+  const toolCalls: ToolCall[] = [];
+
+  for (const item of output) {
+    const type = String(item.type || "");
+    if (type === "reasoning") {
+      reasoningSignature =
+        optionalString(item.encrypted_content) || reasoningSignature;
+      openAIResponsesReasoningId =
+        optionalString(item.id) || openAIResponsesReasoningId;
+      openAIResponsesReasoningStatus =
+        optionalString(item.status) || openAIResponsesReasoningStatus;
+      const summary = jsonClone(item.summary);
+      if (summary != null) openAIResponsesReasoningSummary = summary;
+      reasoningContent ||= reasoningTextFromSummary(item.summary);
+      continue;
+    }
+    if (type === "function_call") {
+      const call = openAIResponsesToolCall(item);
+      if (call) toolCalls.push(call);
+      continue;
+    }
+    if (type === "message" && !text) {
+      const content = Array.isArray(item.content)
+        ? (item.content as Array<Record<string, unknown>>)
+        : [];
+      text = content
+        .filter((part) => part.type === "output_text" || part.type === "text")
+        .map((part) => optionalString(part.text) || "")
+        .join("");
+    }
+  }
+
+  if (text) handlers?.onText?.(text);
+  if (reasoningContent) handlers?.onThinking?.(reasoningContent);
+  const reasoningMetadata: AssistantReasoningMetadata = {
+    ...(reasoningContent ? { reasoningContent } : {}),
+    ...(reasoningSignature
+      ? {
+          reasoningSignature,
+          reasoningSignatureSource: "openai_responses",
+        }
+      : {}),
+    ...(openAIResponsesReasoningId ? { openAIResponsesReasoningId } : {}),
+    ...(openAIResponsesReasoningStatus ? { openAIResponsesReasoningStatus } : {}),
+    ...(openAIResponsesReasoningSummary != null
+      ? { openAIResponsesReasoningSummary }
+      : {}),
+  };
+  notifyReasoningMetadata(handlers, reasoningMetadata);
+
+  const usage = parseOpenAIUsage(
+    data.usage && typeof data.usage === "object"
+      ? (data.usage as Record<string, unknown>)
+      : undefined,
+  );
+  handlers?.onUsage?.(usage);
+  const status = optionalString(data.status) || "";
+  const incomplete = data.incomplete_details as Record<string, unknown> | undefined;
+  const finishReason = optionalString(incomplete?.reason) || status;
+  return {
+    text,
+    usage,
+    toolCalls: toolCalls.length ? toolCalls : undefined,
+    finishReason: finishReason || (toolCalls.length ? "tool_calls" : "stop"),
+    ...reasoningMetadata,
+  };
+}
+
 async function chatOpenAIResponses(
   p: ModelProvider,
   messages: ChatMessage[],
@@ -1149,10 +1626,123 @@ async function chatOpenAIResponses(
     throw new Error(`OpenAI responses ${res.status}: ${errText.slice(0, 400)}`);
   }
 
+  const contentType = res.headers.get("content-type") || "";
+  if (
+    contentType.includes("application/json") &&
+    !contentType.includes("event-stream")
+  ) {
+    const data = (await res.json()) as Record<string, unknown>;
+    return openAIResponsesJsonResult(data, handlers);
+  }
+
   let text = "";
+  let reasoningContent = "";
+  let reasoningSignature = "";
+  let openAIResponsesReasoningId = "";
+  let openAIResponsesReasoningStatus = "";
+  let openAIResponsesReasoningSummary: unknown;
   let usage = emptyUsage();
   let finishReason = "";
   const toolMap = new Map<string, ToolAcc>();
+
+  const responseTool = (
+    itemId: unknown,
+    outputIndex: unknown,
+    item?: Record<string, unknown>,
+  ): ToolAcc => {
+    const providerItemId = optionalString(item?.id) || optionalString(itemId);
+    const providerCallId = optionalString(item?.call_id);
+    const outputKey = Number.isFinite(Number(outputIndex))
+      ? `index:${Number(outputIndex)}`
+      : "";
+    const keys = [
+      providerItemId ? `item:${providerItemId}` : "",
+      providerCallId ? `call:${providerCallId}` : "",
+      outputKey,
+    ].filter(Boolean);
+    let acc = keys.map((key) => toolMap.get(key)).find(Boolean);
+    if (!acc) acc = { id: "", name: "", arguments: "" };
+    if (providerItemId) acc.providerItemId = providerItemId;
+    if (providerCallId) {
+      acc.providerCallId = providerCallId;
+      acc.id = providerCallId;
+    } else if (!acc.id && providerItemId) {
+      acc.id = providerItemId;
+    }
+    const providerStatus = optionalString(item?.status);
+    if (providerStatus) acc.providerStatus = providerStatus;
+    const name = optionalString(item?.name);
+    if (name) acc.name = name;
+    if (typeof item?.arguments === "string" && item.arguments) {
+      acc.arguments = item.arguments;
+    }
+    for (const key of keys) toolMap.set(key, acc);
+    return acc;
+  };
+
+  const applyReasoningItem = (
+    item: Record<string, unknown>,
+    allowSummaryFallback: boolean,
+  ): void => {
+    if (String(item.type || "") !== "reasoning") return;
+    reasoningSignature =
+      optionalString(item.encrypted_content) || reasoningSignature;
+    openAIResponsesReasoningId =
+      optionalString(item.id) || openAIResponsesReasoningId;
+    openAIResponsesReasoningStatus =
+      optionalString(item.status) || openAIResponsesReasoningStatus;
+    const summary = jsonClone(item.summary);
+    if (summary != null) openAIResponsesReasoningSummary = summary;
+    if (allowSummaryFallback && !reasoningContent) {
+      const fallback = reasoningTextFromSummary(item.summary);
+      if (fallback) {
+        reasoningContent = fallback;
+        handlers?.onThinking?.(fallback);
+      }
+    }
+    notifyReasoningMetadata(handlers, {
+      ...(reasoningSignature
+        ? {
+            reasoningSignature,
+            reasoningSignatureSource: "openai_responses",
+          }
+        : {}),
+      ...(openAIResponsesReasoningId ? { openAIResponsesReasoningId } : {}),
+      ...(openAIResponsesReasoningStatus ? { openAIResponsesReasoningStatus } : {}),
+      ...(openAIResponsesReasoningSummary != null
+        ? { openAIResponsesReasoningSummary }
+        : {}),
+    });
+  };
+
+  const applyOutputItem = (
+    item: Record<string, unknown>,
+    outputIndex: unknown,
+    complete: boolean,
+  ): void => {
+    const itemType = String(item.type || "");
+    if (itemType === "reasoning") {
+      applyReasoningItem(item, complete);
+      return;
+    }
+    if (itemType === "function_call") {
+      responseTool(item.id, outputIndex, item);
+      return;
+    }
+    if (itemType === "message" && !text) {
+      const content = Array.isArray(item.content)
+        ? (item.content as Array<Record<string, unknown>>)
+        : [];
+      const fallback = content
+        .filter((part) => part.type === "output_text" || part.type === "text")
+        .map((part) => optionalString(part.text) || "")
+        .join("");
+      if (fallback) {
+        text = fallback;
+        handlers?.onText?.(fallback);
+      }
+    }
+  };
 
   try {
     await readSseStream(res, (obj) => {
@@ -1170,11 +1760,12 @@ async function chatOpenAIResponses(
       }
       // reasoning
       if (
-        type.includes("reasoning") &&
-        type.endsWith(".delta") &&
+        (type === "response.reasoning_summary_text.delta" ||
+          type === "response.reasoning_text.delta") &&
         typeof obj.delta === "string" &&
         obj.delta
       ) {
+        reasoningContent += obj.delta;
         handlers?.onThinking?.(obj.delta);
       }
       // function call args
@@ -1182,52 +1773,43 @@ async function chatOpenAIResponses(
         type === "response.function_call_arguments.delta" &&
         typeof obj.delta === "string"
       ) {
-        const itemId = String(obj.item_id || obj.output_index || "0");
-        const acc = toolMap.get(itemId) || { id: itemId, name: "", arguments: "" };
+        const acc = responseTool(obj.item_id, obj.output_index);
         acc.arguments += obj.delta;
-        toolMap.set(itemId, acc);
+      }
+      if (
+        type === "response.function_call_arguments.done" &&
+        typeof obj.arguments === "string"
+      ) {
+        const acc = responseTool(obj.item_id, obj.output_index);
+        if (obj.arguments) acc.arguments = obj.arguments;
       }
       if (type === "response.output_item.added" || type === "response.output_item.done") {
         const item = obj.item as Record<string, unknown> | undefined;
-        if (item && String(item.type) === "function_call") {
-          const itemId = String(item.id || item.call_id || toolMap.size);
-          const acc = toolMap.get(itemId) || {
-            id: String(item.call_id || itemId),
-            name: "",
-            arguments: "",
-          };
-          if (typeof item.call_id === "string") acc.id = item.call_id;
-          if (typeof item.name === "string") acc.name = item.name;
-          if (typeof item.arguments === "string" && item.arguments) {
-            acc.arguments = item.arguments;
-          }
-          toolMap.set(itemId, acc);
-        }
-        if (item && String(item.type) === "message") {
-          const content = item.content as Array<Record<string, unknown>> | undefined;
-          for (const c of content || []) {
-            if (
-              (c.type === "output_text" || c.type === "text") &&
-              typeof c.text === "string" &&
-              c.text &&
-              !text.includes(c.text)
-            ) {
-              // 仅当流式没推 delta 时补齐
-              if (!text) {
-                text += c.text;
-                handlers?.onText?.(c.text);
-              }
-            }
-          }
+        if (item) {
+          applyOutputItem(item, obj.output_index, type.endsWith(".done"));
         }
       }
       if (type === "response.completed" || type === "response.done") {
         const response = obj.response as Record<string, unknown> | undefined;
+        const output = Array.isArray(response?.output)
+          ? (response.output as Array<Record<string, unknown>>)
+          : [];
+        output.forEach((item, index) => applyOutputItem(item, index, true));
         if (response?.usage && typeof response.usage === "object") {
           usage = parseOpenAIUsage(response.usage as Record<string, unknown>);
           handlers?.onUsage?.(usage);
         }
-        finishReason = "stop";
+        finishReason = optionalString(response?.status) || "stop";
+      }
+      if (type === "response.incomplete") {
+        const response = obj.response as Record<string, unknown> | undefined;
+        const details = response?.incomplete_details as
+          | Record<string, unknown>
+          | undefined;
+        finishReason = optionalString(details?.reason) || "incomplete";
+      }
+      if (type === "response.failed" || type === "error") {
+        throw streamEventError("OpenAI responses", obj);
       }
       if (obj.usage && typeof obj.usage === "object") {
         usage = parseOpenAIUsage(obj.usage as Record<string, unknown>);
@@ -1235,30 +1817,57 @@ async function chatOpenAIResponses(
       }
     });
   } catch (e) {
-    if (text || toolMap.size) throw e;
+    if (
+      e instanceof ProviderStreamEventError ||
+      text ||
+      toolMap.size ||
+      reasoningContent ||
+      reasoningSignature
+    ) {
+      throw e;
+    }
     console.warn("[provider-chat] responses stream fail, fallback chat", e);
     return chatOpenAICompletions(p, messages, handlers, opts, modelHint);
   }
 
-  const toolCalls = [...toolMap.values()]
+  const toolCalls = [...new Set(toolMap.values())]
     .filter((t) => t.name)
     .map((t) => ({
       id: t.id || `call_${Math.random().toString(36).slice(2, 10)}`,
       type: "function" as const,
       function: { name: t.name, arguments: t.arguments || "{}" },
+      ...(t.providerItemId ? { openAIResponsesId: t.providerItemId } : {}),
+      ...(t.providerCallId ? { openAIResponsesCallId: t.providerCallId } : {}),
+      ...(t.providerStatus ? { openAIResponsesStatus: t.providerStatus } : {}),
     }));
 
-  if (!text && !toolCalls.length) {
+  if (!text && !toolCalls.length && !reasoningContent && !reasoningSignature) {
     return chatOpenAICompletions(p, messages, handlers, opts, modelHint);
   }
   if (!usage.promptTokens && !usage.completionTokens) {
     usage = estimateUsage(messages, text);
   }
+  const reasoningMetadata: AssistantReasoningMetadata = {
+    ...(reasoningContent ? { reasoningContent } : {}),
+    ...(reasoningSignature
+      ? {
+          reasoningSignature,
+          reasoningSignatureSource: "openai_responses",
+        }
+      : {}),
+    ...(openAIResponsesReasoningId ? { openAIResponsesReasoningId } : {}),
+    ...(openAIResponsesReasoningStatus ? { openAIResponsesReasoningStatus } : {}),
+    ...(openAIResponsesReasoningSummary != null
+      ? { openAIResponsesReasoningSummary }
+      : {}),
+  };
+  notifyReasoningMetadata(handlers, reasoningMetadata);
   return {
     text,
     usage,
     toolCalls: toolCalls.length ? toolCalls : undefined,
     finishReason: finishReason || (toolCalls.length ? "tool_calls" : "stop"),
+    ...reasoningMetadata,
   };
 }
 
@@ -1273,7 +1882,7 @@ async function chatOpenAINonStream(
   const effort = resolveReasoningEffort(p, modelHint);
   const body: Record<string, unknown> = {
     model: p.modelID,
-    messages: toOpenAIMessages(messages),
+    messages: toOpenAIMessages(messages, Boolean(effort)),
     stream: false,
   };
   const maxTokens = resolveMaxCompletionTokens(p, opts);
@@ -1336,6 +1945,11 @@ function finalizeOpenAIJson(
   const message = choices?.[0]?.message as Record<string, unknown> | undefined;
   const text = String(message?.content || "");
   if (text) handlers?.onText?.(text);
+  const reasoningMetadata = chatReasoningMetadata(message);
+  if (reasoningMetadata.reasoningContent) {
+    handlers?.onThinking?.(reasoningMetadata.reasoningContent);
+  }
+  notifyReasoningMetadata(handlers, reasoningMetadata);
 
   const rawTools = (message?.tool_calls as Array<Record<string, unknown>>) || [];
   const toolCalls: ToolCall[] = rawTools
@@ -1366,6 +1980,7 @@ function finalizeOpenAIJson(
     usage,
     toolCalls: toolCalls.length ? toolCalls : undefined,
     finishReason: finishReason || (toolCalls.length ? "tool_calls" : "stop"),
+    ...reasoningMetadata,
   };
 }
 
@@ -1404,7 +2019,8 @@ async function chatAnthropic(
   }, opts);
 
   if (!res.ok) {
-    return chatAnthropicNonStream(p, messages, handlers, opts);
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Anthropic chat ${res.status}: ${errText.slice(0, 400)}`);
   }
 
   const ct = res.headers.get("content-type") || "";
@@ -1414,10 +2030,33 @@ async function chatAnthropic(
   }
 
   let text = "";
+  let reasoningContent = "";
+  let reasoningSignature = "";
   let usage = emptyUsage();
   try {
     await readSseStream(res, (obj) => {
       const type = String(obj.type || "");
+      if (type === "error" || (obj.error && typeof obj.error === "object")) {
+        throw streamEventError("Anthropic", obj);
+      }
+      if (type === "content_block_start") {
+        const block = obj.content_block as Record<string, unknown> | undefined;
+        if (block?.type === "thinking") {
+          const thinking = optionalString(block.thinking);
+          if (thinking) {
+            reasoningContent += thinking;
+            handlers?.onThinking?.(thinking);
+          }
+          const signature = optionalString(block.signature);
+          if (signature) {
+            reasoningSignature = signature;
+            notifyReasoningMetadata(handlers, {
+              reasoningSignature,
+              reasoningSignatureSource: "anthropic",
+            });
+          }
+        }
+      }
       if (type === "content_block_delta") {
         const delta = obj.delta as Record<string, unknown> | undefined;
         if (delta?.type === "text_delta" && typeof delta.text === "string") {
@@ -1426,9 +2065,19 @@ async function chatAnthropic(
         }
         if (
           (delta?.type === "thinking_delta" || delta?.type === "reasoning_delta") &&
-          typeof delta.text === "string"
+          (typeof delta.thinking === "string" || typeof delta.text === "string")
         ) {
-          handlers?.onThinking?.(delta.text);
+          const thinking = String(delta.thinking || delta.text || "");
+          reasoningContent += thinking;
+          handlers?.onThinking?.(thinking);
+        }
+        const signature = optionalString(delta?.signature);
+        if (signature) {
+          reasoningSignature = signature;
+          notifyReasoningMetadata(handlers, {
+            reasoningSignature,
+            reasoningSignatureSource: "anthropic",
+          });
         }
       }
       if (type === "message_delta" || type === "message_start") {
@@ -1453,15 +2102,35 @@ async function chatAnthropic(
         }
       }
     });
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof ProviderStreamEventError ||
+      text ||
+      reasoningContent ||
+      reasoningSignature
+    ) {
+      throw error;
+    }
     return chatAnthropicNonStream(p, messages, handlers, opts);
   }
 
-  if (!text) return chatAnthropicNonStream(p, messages, handlers, opts);
+  if (!text && !reasoningContent && !reasoningSignature) {
+    return chatAnthropicNonStream(p, messages, handlers, opts);
+  }
   if (!usage.promptTokens && !usage.completionTokens) {
     usage = estimateUsage(messages, text);
   }
-  return { text, usage, finishReason: "stop" };
+  const reasoningMetadata: AssistantReasoningMetadata = {
+    ...(reasoningContent ? { reasoningContent } : {}),
+    ...(reasoningSignature
+      ? {
+          reasoningSignature,
+          reasoningSignatureSource: "anthropic",
+        }
+      : {}),
+  };
+  notifyReasoningMetadata(handlers, reasoningMetadata);
+  return { text, usage, finishReason: "stop", ...reasoningMetadata };
 }
 
 async function chatAnthropicNonStream(
@@ -1511,9 +2180,18 @@ function finalizeAnthropicJson(
   const content =
     (data.content as Array<Record<string, unknown>>) || [];
   let text = "";
+  let reasoningContent = "";
+  let reasoningSignature = "";
   const toolCalls: ToolCall[] = [];
   for (const c of content) {
-    if (c.type === "text" || typeof c.text === "string") {
+    if (c.type === "thinking") {
+      const thinking =
+        optionalString(c.thinking) || optionalString(c.text) || "";
+      reasoningContent += thinking;
+      reasoningSignature = optionalString(c.signature) || reasoningSignature;
+      continue;
+    }
+    if (c.type === "text" || (!c.type && typeof c.text === "string")) {
       const t = String(c.text || "");
       text += t;
     }
@@ -1529,6 +2207,17 @@ function finalizeAnthropicJson(
     }
   }
   if (text) handlers?.onText?.(text);
+  if (reasoningContent) handlers?.onThinking?.(reasoningContent);
+  const reasoningMetadata: AssistantReasoningMetadata = {
+    ...(reasoningContent ? { reasoningContent } : {}),
+    ...(reasoningSignature
+      ? {
+          reasoningSignature,
+          reasoningSignatureSource: "anthropic",
+        }
+      : {}),
+  };
+  notifyReasoningMetadata(handlers, reasoningMetadata);
   const u = (data.usage || {}) as Record<string, unknown>;
   const usage: ChatUsage = {
     promptTokens: Number(u.input_tokens || 0),
@@ -1546,6 +2235,7 @@ function finalizeAnthropicJson(
       stop === "tool_use" || toolCalls.length
         ? "tool_calls"
         : stop || "stop",
+    ...reasoningMetadata,
   };
 }
 
@@ -1560,6 +2250,7 @@ async function withRetry<T>(
       return await fn();
     } catch (e) {
       last = e;
+      if (e instanceof ProviderStreamEventError) throw e;
       const msg = e instanceof Error ? e.message : String(e);
       if (
         !canRetry() ||
@@ -1593,32 +2284,45 @@ export async function runProviderChatMessages(
     opts?.requestContext ||
     createRequestContext({ modelHint, source: "unknown" });
   if (modelHint && !ctx.modelHint) ctx.modelHint = modelHint;
-  const candidates = providerCandidates(providers, modelHint);
+  const fixedCursorRoute = opts?.cursorNativeErrorBoundary
+    ? pickProvider(
+      providers.filter((provider) => provider.enabled !== false),
+      modelHint,
+    )
+    : undefined;
+  const candidates = opts?.cursorNativeErrorBoundary
+    ? fixedCursorRoute
+      ? [fixedCursorRoute]
+      : []
+    : providerCandidates(providers, modelHint);
   if (!candidates.length) {
     throw new Error("没有已启用的供应商，请先在「供应商」页添加并启用");
   }
-  const p = candidates[0];
-  if (!p.apiKey?.trim() && candidates.length === 1) {
+  const attemptCandidates = candidates;
+  const p = attemptCandidates[0];
+  if (!p.apiKey?.trim() && attemptCandidates.length === 1) {
     throw new Error(`供应商 ${p.displayName} 缺少 API Key`);
   }
-  if (!p.modelID?.trim() && candidates.length === 1) {
+  if (!p.modelID?.trim() && attemptCandidates.length === 1) {
     throw new Error(`供应商 ${p.displayName} 缺少 Model ID`);
   }
 
   let messages: ChatMessage[] = [...inputMessages];
   if (!messages.length) {
-    messages.push({ role: "user", content: "Hello" });
+    throw new Error("provider request requires replayable conversation input");
   }
 
-  try {
-    messages = mergeManagedSystemPrompt(messages, await getActiveSystemPrompt());
-  } catch (e) {
-    console.warn("[agent] prompt inject skipped", e);
+  if (opts?.includeManagedSystemPrompt !== false) {
+    try {
+      messages = mergeManagedSystemPrompt(messages, await getActiveSystemPrompt());
+    } catch (e) {
+      console.warn("[agent] prompt inject skipped", e);
+    }
   }
 
   let lastError: unknown;
   let attemptIndex = 0;
-  for (const candidate of candidates) {
+  for (const candidate of attemptCandidates) {
     if (!candidate.apiKey?.trim() || !candidate.modelID?.trim()) continue;
 
     // Recalculate for every candidate so failover respects that provider's
@@ -1629,6 +2333,21 @@ export async function runProviderChatMessages(
       opts?.globalContextWindowTokens,
       opts?.maxCompletionTokens,
     );
+    const originalInputTokens = estimateChatMessagesTokens(messages);
+    if (
+      opts?.strictContextBudget &&
+      originalInputTokens > prepared.budget.inputBudgetTokens
+    ) {
+      const providerError = attachProviderRoute(
+        new Error(
+          `context input exceeds ${candidate.modelID} budget: ${originalInputTokens} > ${prepared.budget.inputBudgetTokens}`,
+        ),
+        candidate,
+      );
+      lastError = providerError;
+      markError(ctx, providerError);
+      throw providerError;
+    }
     const attemptOptions: ChatOptions = {
       ...opts,
       maxCompletionTokens: prepared.budget.maxCompletionTokens,
@@ -1643,6 +2362,16 @@ export async function runProviderChatMessages(
       onThinking: (delta) => {
         if (delta) emitted = true;
         handlers?.onThinking?.(delta);
+      },
+      onReasoningMetadata: (metadata) => {
+        if (
+          metadata.reasoningContent ||
+          metadata.reasoningSignature ||
+          metadata.openAIResponsesReasoningId
+        ) {
+          emitted = true;
+        }
+        handlers?.onReasoningMetadata?.(metadata);
       },
       onUsage: (usage) => handlers?.onUsage?.(usage),
     };
@@ -1659,9 +2388,12 @@ export async function runProviderChatMessages(
                 attemptOptions,
                 modelHint,
               ),
-        2,
+        opts?.cursorNativeErrorBoundary ? 0 : 2,
         () => !emitted,
       );
+      if (!result.text.trim() && !(result.toolCalls?.length)) {
+        throw new Error("provider returned an empty completion");
+      }
       recordProviderSuccess(candidate.id);
       const routeReason: RouteReason =
         attemptIndex === 0
@@ -1685,21 +2417,25 @@ export async function runProviderChatMessages(
         requestId: ctx.requestId,
       };
     } catch (error) {
-      lastError = error;
-      markError(ctx, error);
-      const msg = error instanceof Error ? error.message : String(error);
+      const providerError = attachProviderRoute(error, candidate);
+      lastError = providerError;
+      markError(ctx, providerError);
+      const msg = providerError.message;
       const aborted =
         (error instanceof Error && error.name === "AbortError") ||
         /abort|cancel/i.test(msg) ||
         Boolean(opts?.signal?.aborted);
-      // Client cancel / timeout must not failover to another provider.
-      if (aborted || (!isTransientProviderError(error) && !shouldFailover(error)) || emitted) {
-        throw error;
+      if (opts?.cursorNativeErrorBoundary) {
+        throw providerError;
       }
-      recordProviderFailure(candidate.id, error);
+      // Client cancel / timeout must not failover to another provider.
+      if (aborted || (!isTransientProviderError(providerError) && !shouldFailover(providerError)) || emitted) {
+        throw providerError;
+      }
+      recordProviderFailure(candidate.id, providerError);
       console.warn(
         `[provider-chat] ${candidate.displayName} failed, trying next provider`,
-        error,
+        providerError,
       );
       attemptIndex += 1;
     }

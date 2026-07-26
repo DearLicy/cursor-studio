@@ -43,6 +43,22 @@ export function buildThinkingCompletedMessage(durationMs: number): AgentServerMe
   };
 }
 
+export function buildSummaryStartedMessage(): AgentServerMessage {
+  return { interactionUpdate: { summaryStarted: {} } };
+}
+
+export function buildSummaryMessage(text: string): AgentServerMessage {
+  return { interactionUpdate: { summary: { summary: text } } };
+}
+
+export function buildSummaryCompletedMessage(hookMessage?: string): AgentServerMessage {
+  return {
+    interactionUpdate: {
+      summaryCompleted: hookMessage ? { hookMessage } : {},
+    },
+  };
+}
+
 function normalizeCheckpointTokenCount(value: number): number {
   if (!Number.isFinite(value) || value <= 0) return 0;
   return Math.min(0xffffffff, Math.floor(value));
@@ -52,6 +68,8 @@ function normalizeCheckpointTokenCount(value: number): number {
 export function buildConversationCheckpointMessage(opts: {
   usedTokens: number;
   maxTokens: number;
+  /** Protobuf-only state; JSON debug output intentionally keeps its stable shape. */
+  conversationState?: Buffer | Uint8Array;
 }): AgentServerMessage {
   return {
     conversationCheckpointUpdate: {
@@ -133,6 +151,7 @@ export function buildToolCallCompletedMessage(opts: {
   name: string;
   result: string;
   ok: boolean;
+  args?: Record<string, unknown>;
   modelCallId?: string;
 }): AgentServerMessage {
   return {
@@ -142,6 +161,7 @@ export function buildToolCallCompletedMessage(opts: {
         modelCallId: opts.modelCallId || opts.callId,
         toolCall: {
           name: opts.name,
+          args: opts.args || {},
           result: opts.result,
           ok: opts.ok,
         },

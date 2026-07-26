@@ -36,7 +36,8 @@ assert.ok(layout.includes("export function ErrorState"), "ErrorState");
 assert.ok(layout.includes("export function SectionCard"), "SectionCard");
 assert.ok(app.includes("LoadingState"), "App uses LoadingState");
 assert.ok(app.includes("page-enter"), "page enter animation class");
-assert.ok(providers.includes("provider-grid dense"), "provider grid density");
+assert.ok(providers.includes("provider-directory__rows"), "provider directory layout");
+assert.ok(providers.includes("workspace-layer-enter"), "provider directory motion");
 
 console.log("PASS smoke-stage5-ui", {
   tokenBytes: tokens.length,

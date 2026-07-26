@@ -15,13 +15,16 @@ function candidateIconPaths(): string[] {
   const runtimeDir = path.dirname(fileURLToPath(import.meta.url));
 
   return [
+    resourcesPath ? path.join(resourcesPath, "resources", "icon-runtime.png") : "",
     resourcesPath ? path.join(resourcesPath, "resources", "icon-round.png") : "",
     resourcesPath ? path.join(resourcesPath, "resources", "icon.png") : "",
     resourcesPath ? path.join(resourcesPath, "icon-round.png") : "",
     resourcesPath ? path.join(resourcesPath, "icon.png") : "",
     path.join(process.cwd(), "resources", "icon-round.png"),
+    path.join(process.cwd(), "resources", "icon-runtime.png"),
     path.join(process.cwd(), "resources", "icon.png"),
     path.join(runtimeDir, "../../resources", "icon-round.png"),
+    path.join(runtimeDir, "../../resources", "icon-runtime.png"),
     path.join(runtimeDir, "../../resources", "icon.png"),
     path.join(runtimeDir, "../resources", "icon-round.png"),
     path.join(runtimeDir, "../resources", "icon.png"),

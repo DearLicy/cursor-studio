@@ -11,6 +11,7 @@ const previousUserData = process.env.CURSOR_STUDIO_CURSOR_USER_DATA;
 const previousCursorHome = process.env.CURSOR_STUDIO_CURSOR_HOME;
 const firstId = "11111111-1111-4111-8111-111111111111";
 const secondId = "22222222-2222-4222-8222-222222222222";
+const emptyId = "33333333-3333-4333-8333-333333333333";
 
 function header(composerId, workspace, title) {
   return {
@@ -57,6 +58,7 @@ try {
   await fs.mkdir(workspace, { recursive: true });
   await writeTranscript(firstId);
   await writeTranscript(secondId);
+  await writeTranscript(emptyId);
 
   const db = new DatabaseSync(databasePath);
   db.exec("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)");
@@ -66,6 +68,7 @@ try {
     JSON.stringify({ allComposers: [
       header(firstId, workspace, "First"),
       header(secondId, workspace, "Second"),
+      header(emptyId, workspace, "Empty"),
     ] }),
   );
   for (const [composerId, bubbles] of [
@@ -89,6 +92,14 @@ try {
       "checkpoint",
     );
   }
+  db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(
+    `composerData:${emptyId}`,
+    JSON.stringify(composerData(emptyId, [])),
+  );
+  db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(
+    `checkpointId:${emptyId}:checkpoint`,
+    "checkpoint",
+  );
   db.close();
 
   process.env.CURSOR_STUDIO_CURSOR_USER_DATA = cursorUserData;
@@ -99,6 +110,18 @@ try {
   assert.equal(listed.totalSessions, 2);
   const detail = await sessions.readSessionDetail(`cursor:${firstId}`);
   assert.deepEqual(detail.messages.map((message) => message.text), ["Hello", "World"]);
+
+  const clearedEmpty = await sessions.clearEmptySessions();
+  assert.equal(clearedEmpty.emptyFound, 1);
+  assert.deepEqual(clearedEmpty.removed, [`cursor:${emptyId}`]);
+  assert.deepEqual(clearedEmpty.failed, []);
+  await assert.rejects(fs.stat(path.join(
+    cursorHome,
+    "projects",
+    "project",
+    "agent-transcripts",
+    emptyId,
+  )));
 
   const removed = await sessions.removeSessions([`cursor:${firstId}`]);
   assert.deepEqual(removed.removed, [`cursor:${firstId}`]);

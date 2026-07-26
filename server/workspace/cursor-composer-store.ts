@@ -271,7 +271,9 @@ function readVisibleMessages(db: DatabaseSync, composerId: string): CursorCompos
 }
 
 /** Read every user-visible Cursor conversation from its authoritative store. */
-export async function listCursorComposerSessions(): Promise<CursorComposerSession[]> {
+export async function listCursorComposerSessions(
+  options: { includeEmpty?: boolean } = {},
+): Promise<CursorComposerSession[]> {
   const candidates = await cursorComposerStateDatabasePaths();
   const sessions = new Map<string, CursorComposerSession>();
 
@@ -294,7 +296,7 @@ export async function listCursorComposerSessions(): Promise<CursorComposerSessio
         // Cursor can re-persist cached session headers after its message
         // records have been removed. A header alone is not a user session and
         // must never create an empty item in the Studio conversation list.
-        if (!item || item.messageCount === 0) continue;
+        if (!item || (!options.includeEmpty && item.messageCount === 0)) continue;
         const current = sessions.get(item.composerId);
         if (!current || (item.updatedAt || "") > (current.updatedAt || "")) {
           sessions.set(item.composerId, item);

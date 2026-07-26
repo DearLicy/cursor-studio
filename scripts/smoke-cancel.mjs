@@ -13,6 +13,18 @@ import {
   publish,
 } from "../server/backend/agent/broker.ts";
 import {
+  listPending,
+  registerPending,
+  registerPendingInteraction,
+} from "../server/backend/forwarder/client-bridge.ts";
+import {
+  decodeAgentServerMessage,
+} from "../server/backend/forwarder/agent-proto.ts";
+import {
+  streamEventToMessage,
+  streamEventToProto,
+} from "../server/backend/forwarder/stream-writer.ts";
+import {
   mergeManagedSystemPrompt,
 } from "../server/backend/agent/provider-chat.ts";
 import { createRequestContext } from "../server/backend/request-context.ts";
@@ -53,6 +65,65 @@ assert.equal(signal.aborted, true);
 // request context still usable
 const ctx = createRequestContext({ requestId: rid3, source: "agent" });
 assert.equal(ctx.requestId, rid3);
+
+// A cancelled Cursor turn must immediately release both kinds of client
+// bridge waiter. Otherwise an old tool round can survive for minutes and
+// append stale output after the user has stopped it.
+const rid4 = "cancel-smoke-pending-bridge";
+ensureStream(rid4);
+const bridgeSignal = getStreamSignal(rid4);
+const execPending = {
+  kind: "exec",
+  execId: "cancel-exec-1",
+  messageId: 41,
+  toolCallId: "cancel-tool-1",
+  name: "CallMcpTool",
+  argsJson: "{}",
+  createdAt: Date.now(),
+};
+const interactionPending = {
+  kind: "interaction",
+  interactionId: "42",
+  messageId: 42,
+  toolCallId: "cancel-tool-2",
+  name: "AskQuestion",
+  argsJson: "{}",
+  createdAt: Date.now(),
+  interactionKind: "ask_question",
+};
+const execWait = registerPending(rid4, execPending, 5_000, bridgeSignal);
+const interactionWait = registerPendingInteraction(
+  rid4,
+  interactionPending,
+  5_000,
+  bridgeSignal,
+);
+assert.equal(listPending(rid4).length, 2, "both bridge waiters registered");
+cancelStream(rid4, "pending_cancel");
+const [execCancelled, interactionCancelled] = await Promise.all([
+  execWait,
+  interactionWait,
+]);
+assert.equal(execCancelled.ok, false);
+assert.equal(interactionCancelled.ok, false);
+assert.match(execCancelled.result, /cancelled/i);
+assert.match(interactionCancelled.result, /cancelled/i);
+assert.equal(listPending(rid4).length, 0, "cancel clears bridge waiters");
+
+// AgentServerMessage.exec_server_control_message = field 5, with abort.id
+// matching the original client exec message ID.
+const abortEvent = { type: "exec_abort", messageId: execPending.messageId };
+const abortJson = streamEventToMessage(abortEvent);
+assert.equal(
+  abortJson?.execServerControlMessage?.abort?.id,
+  execPending.messageId,
+  "exec abort JSON shape",
+);
+const abortProto = streamEventToProto(abortEvent);
+assert.ok(abortProto?.length, "exec abort protobuf emitted");
+const abortDecoded = decodeAgentServerMessage(abortProto);
+assert.equal(abortDecoded.kind, "exec_server_control_message");
+assert.equal(abortDecoded.messageId, execPending.messageId);
 
 // managed prompt helper still works (sanity)
 const msgs = mergeManagedSystemPrompt(

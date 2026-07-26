@@ -8,10 +8,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { StreamEvent } from "../agent/broker";
 import {
+  buildAgentServerExecAbortJson,
+  encodeAgentServerExecAbort,
   encodeAgentServerExec,
   encodeAgentServerInteractionQuery,
   encodeConversationCheckpoint,
   encodeHeartbeatUpdate,
+  encodeSummary,
+  encodeSummaryCompleted,
+  encodeSummaryStarted,
   encodeTextDelta,
   encodeThinkingCompleted,
   encodeThinkingDelta,
@@ -26,10 +31,17 @@ import {
   encodeConnectFrame,
 } from "./connect-frame";
 import {
+  buildCursorConnectErrorTrailer,
+  type ConnectTerminalErrorInput,
+} from "./connect-error";
+import {
   buildConversationCheckpointMessage,
   buildErrorMessage,
   buildExecRequestMessage,
   buildHeartbeatMessage,
+  buildSummaryCompletedMessage,
+  buildSummaryMessage,
+  buildSummaryStartedMessage,
   buildStatusMessage,
   buildTextDeltaMessage,
   buildThinkingCompletedMessage,
@@ -80,6 +92,12 @@ export function streamEventToMessage(ev: StreamEvent): AgentServerMessage | null
       return buildThinkingDeltaMessage(ev.text);
     case "thinking_done":
       return buildThinkingCompletedMessage(ev.durationMs);
+    case "summary_started":
+      return buildSummaryStartedMessage();
+    case "summary":
+      return buildSummaryMessage(ev.text);
+    case "summary_completed":
+      return buildSummaryCompletedMessage(ev.hookMessage);
     case "usage":
       return {
         usage: {
@@ -93,12 +111,14 @@ export function streamEventToMessage(ev: StreamEvent): AgentServerMessage | null
       return buildConversationCheckpointMessage({
         usedTokens: ev.usedTokens,
         maxTokens: ev.maxTokens,
+        conversationState: ev.conversationState,
       });
     case "tool_started":
       return buildToolCallStartedMessage({
         callId: ev.callId,
         name: ev.name,
         args: ev.args,
+        modelCallId: ev.modelCallId,
       });
     case "tool_completed":
       return buildToolCallCompletedMessage({
@@ -106,6 +126,8 @@ export function streamEventToMessage(ev: StreamEvent): AgentServerMessage | null
         name: ev.name,
         result: ev.result,
         ok: ev.ok,
+        args: ev.args,
+        modelCallId: ev.modelCallId,
       });
     case "exec_request":
       return buildExecRequestMessage({
@@ -115,6 +137,10 @@ export function streamEventToMessage(ev: StreamEvent): AgentServerMessage | null
         args: ev.args,
         messageId: ev.messageId,
       });
+    case "exec_abort":
+      return buildAgentServerExecAbortJson({
+        messageId: ev.messageId,
+      }) as AgentServerMessage;
     case "interaction_query":
       return buildInteractionQueryJson({
         messageId: ev.messageId,
@@ -151,6 +177,12 @@ export function streamEventToProto(ev: StreamEvent): Buffer | null {
       return encodeThinkingDelta(ev.text);
     case "thinking_done":
       return encodeThinkingCompleted(ev.durationMs);
+    case "summary_started":
+      return encodeSummaryStarted();
+    case "summary":
+      return encodeSummary(ev.text);
+    case "summary_completed":
+      return encodeSummaryCompleted(ev.hookMessage);
     case "usage":
       // TokenDelta 仅有单字段；用 completion 近似，完整统计在 turn_ended
       return encodeTokenDelta(ev.completionTokens || ev.promptTokens || 0);
@@ -158,12 +190,14 @@ export function streamEventToProto(ev: StreamEvent): Buffer | null {
       return encodeConversationCheckpoint({
         usedTokens: ev.usedTokens,
         maxTokens: ev.maxTokens,
+        conversationState: ev.conversationState,
       });
     case "tool_started":
       return encodeToolCallStarted({
         callId: ev.callId,
         name: ev.name,
         args: ev.args,
+        modelCallId: ev.modelCallId,
       });
     case "tool_completed":
       return encodeToolCallCompleted({
@@ -171,6 +205,8 @@ export function streamEventToProto(ev: StreamEvent): Buffer | null {
         name: ev.name,
         result: ev.result,
         ok: ev.ok,
+        args: ev.args,
+        modelCallId: ev.modelCallId,
       });
     case "exec_request":
       return encodeAgentServerExec({
@@ -178,6 +214,10 @@ export function streamEventToProto(ev: StreamEvent): Buffer | null {
         execId: ev.execId,
         toolName: ev.name,
         args: { ...(ev.args || {}), toolCallId: ev.callId },
+      });
+    case "exec_abort":
+      return encodeAgentServerExecAbort({
+        messageId: ev.messageId,
       });
     case "interaction_query":
       return encodeAgentServerInteractionQuery({
@@ -187,7 +227,10 @@ export function streamEventToProto(ev: StreamEvent): Buffer | null {
         args: ev.args || {},
       });
     case "error":
-      return encodeTextDelta(`[error] ${ev.message}`);
+      // Errors are represented by the Connect end-stream trailer. Encoding a
+      // text delta here made Cursor treat the provider failure as assistant
+      // content, which could discard the in-progress conversation bubble.
+      return null;
     case "done":
       return null;
     case "heartbeat":
@@ -223,12 +266,20 @@ function legacyTypeOf(ev: StreamEvent): string | undefined {
       return "turn_ended";
     case "thinking":
       return "thinking";
+    case "summary_started":
+      return "summary_started";
+    case "summary":
+      return "summary";
+    case "summary_completed":
+      return "summary_completed";
     case "tool_started":
       return "tool_started";
     case "tool_completed":
       return "tool_completed";
     case "exec_request":
       return "exec_request";
+    case "exec_abort":
+      return "exec_abort";
     case "interaction_query":
       return "interaction_query";
     default:
@@ -242,18 +293,10 @@ function messageToSseLine(msg: AgentServerMessage, legacyType?: string): string 
 }
 
 /** Connect end-stream 帧（flags=0x02，JSON trailer） */
-export function encodeConnectEndStream(error?: {
-  code?: string;
-  message?: string;
-}): Buffer {
+export function encodeConnectEndStream(error?: ConnectTerminalErrorInput): Buffer {
   const body =
-    error && error.message
-      ? JSON.stringify({
-          error: {
-            code: error.code || "unknown",
-            message: error.message,
-          },
-        })
+    error
+      ? JSON.stringify(buildCursorConnectErrorTrailer(error))
       : "{}";
   return encodeConnectFrame(body, CONNECT_FLAG_END_STREAM);
 }
@@ -262,7 +305,8 @@ export type RunSseWriter = {
   mode: StreamWireMode;
   writeEvent: (ev: StreamEvent) => void;
   endOk: () => void;
-  endError: (message: string) => void;
+  /** Accept a raw message for existing callers or rich status metadata for new ones. */
+  endError: (error: string | ConnectTerminalErrorInput) => void;
 };
 
 export function createRunSseWriter(
@@ -301,7 +345,7 @@ export function createRunSseWriter(
 
   // connect_proto：二进制 Connect 帧；end-stream 只写一次
   let streamEnded = false;
-  const writeEnd = (error?: { code?: string; message?: string }) => {
+  const writeEnd = (error?: ConnectTerminalErrorInput) => {
     if (streamEnded || res.writableEnded) return;
     streamEnded = true;
     writeRaw(encodeConnectEndStream(error));
@@ -315,9 +359,11 @@ export function createRunSseWriter(
         return;
       }
       if (ev.type === "error") {
-        const bin = streamEventToProto(ev);
-        if (bin) writeRaw(encodeConnectFrame(bin, 0));
-        writeEnd({ code: "unknown", message: ev.message });
+        writeEnd({
+          code: ev.code || "unavailable",
+          message: ev.message,
+          status: ev.status,
+        });
         return;
       }
       const bin = streamEventToProto(ev);
@@ -327,8 +373,12 @@ export function createRunSseWriter(
     endOk: () => {
       writeEnd();
     },
-    endError: (message) => {
-      writeEnd({ code: "unknown", message });
+    endError: (error) => {
+      writeEnd(
+        typeof error === "string"
+          ? { code: "unknown", message: error }
+          : error,
+      );
     },
   };
 }

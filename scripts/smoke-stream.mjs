@@ -197,13 +197,21 @@ function main() {
     { type: "text", text: "hi" },
     { type: "thinking", text: "t" },
     { type: "checkpoint", usedTokens: 1_234, maxTokens: 500_000 },
-    { type: "tool_started", callId: "x", name: "Shell", args: { command: "ls" } },
+    {
+      type: "tool_started",
+      callId: "x",
+      name: "Shell",
+      args: { command: "ls" },
+      modelCallId: "model-call-1",
+    },
     {
       type: "tool_completed",
       callId: "x",
       name: "Shell",
       result: "out",
       ok: true,
+      args: { command: "ls" },
+      modelCallId: "model-call-1",
     },
     {
       type: "turn_ended",
@@ -230,6 +238,16 @@ function main() {
     "checkpoint JSON maxTokens",
   );
   console.log("streamEvent mapping ok", evs.length);
+
+  const mappedStart = decodeAgentServerMessage(
+    streamEventToProto(evs.find((event) => event.type === "tool_started")),
+  );
+  const mappedCompleted = decodeAgentServerMessage(
+    streamEventToProto(evs.find((event) => event.type === "tool_completed")),
+  );
+  assert(mappedStart.modelCallId === "model-call-1", "tool start model_call_id");
+  assert(mappedCompleted.modelCallId === "model-call-1", "tool completed model_call_id");
+  assert(mappedCompleted.toolCall?.hasResult, "tool completed retains typed result");
 
   // 3) 拼一条 Connect 二进制流：text + tool + turn + end
   const frames = [

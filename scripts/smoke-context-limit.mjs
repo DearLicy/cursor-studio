@@ -18,6 +18,7 @@ import {
 import { encodeConnectFrame } from "../server/backend/forwarder/connect-frame.ts";
 import {
   estimateChatMessagesTokens,
+  isProviderRequestError,
   prepareProviderMessages,
   runProviderChatMessages,
 } from "../server/backend/agent/provider-chat.ts";
@@ -174,6 +175,28 @@ const requestBody = await withFixtureUpstream(async (baseURL) => {
 assert.equal(requestBody.max_tokens, 1234);
 console.log("provider output context budget ok");
 
+const defaultOutputBudget = prepareProviderMessages(
+  {
+    id: "default-output-budget",
+    displayName: "Default output budget",
+    type: "openai",
+    baseURL: "https://example.test/v1",
+    apiKey: "fixture-key",
+    modelID: "fixture-model",
+    models: ["fixture-model"],
+    contextWindowTokens: 200_000,
+    maxCompletionTokens: 500_000,
+    enabled: true,
+  },
+  [{ role: "user", content: "short normal conversation" }],
+  200_000,
+  198_000,
+);
+assert.equal(defaultOutputBudget.budget.maxCompletionTokens, 65_536);
+assert.equal(defaultOutputBudget.budget.safetyMarginTokens, 1_024);
+assert.ok(defaultOutputBudget.budget.inputBudgetTokens > 100_000);
+console.log("default output cap and safety margin ok");
+
 const constrainedProvider = {
   id: "history-budget",
   displayName: "History budget",
@@ -242,6 +265,26 @@ assert(
   ),
   "removed history does not leave an orphaned tool result",
 );
+
+await assert.rejects(
+  () => runProviderChatMessages(
+    [constrainedProvider],
+    historyFixture,
+    "history-budget",
+    undefined,
+    {
+      globalContextWindowTokens: 10_000,
+      maxCompletionTokens: 512,
+      strictContextBudget: true,
+    },
+  ),
+  (error) => {
+    assert(isProviderRequestError(error), "strict budget keeps the provider route");
+    assert.match(String(error.message), /context input exceeds/i);
+    return true;
+  },
+);
+console.log("strict forwarding budget rejects before history is trimmed");
 
 const compactedRequestBody = await withFixtureUpstream(async (baseURL) => {
   await runProviderChatMessages(

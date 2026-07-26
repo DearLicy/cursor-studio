@@ -1,8 +1,12 @@
 {
   "name": "cursor-studio",
-  "version": "1.0.2",
-  "description": "Cursor Studio Windows 桌面管理工具",
-  "author": "Cursor Studio",
+  "version": "1.0.3",
+  "description": "Cursor Studio - Cursor 桌面管理工具",
+  "author": {
+    "name": "李初一",
+    "email": "82719519@qq.com",
+    "url": "https://www.akucb.com"
+  },
   "private": true,
   "license": "MIT",
   "repository": {
@@ -34,30 +38,63 @@
     "dev:electron": "node scripts/start-dev-electron.mjs",
     "control": "tsx server/cli.ts",
     "build": "vite build",
-    "pack": "vite build && electron-builder --win msi && node scripts/prune-release.mjs",
-    "dist:msi": "vite build && electron-builder --win msi && node scripts/prune-release.mjs",
+    "pack": "vite build && electron-builder --win msi && node scripts/verify-win-executable.mjs && node scripts/prune-release.mjs",
+    "dist:msi": "vite build && electron-builder --win msi && node scripts/verify-win-executable.mjs && node scripts/prune-release.mjs",
     "dist:win": "npm run dist:msi",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "smoke": "node scripts/smoke-agent.mjs",
     "smoke:tools": "node scripts/smoke-tools.mjs",
     "smoke:exec": "tsx scripts/smoke-exec.mjs",
+    "smoke:local-tools": "tsx scripts/smoke-local-tools.mjs",
     "smoke:bridge": "tsx scripts/smoke-bridge.mjs",
+    "smoke:client-shell-stream": "tsx scripts/smoke-client-shell-stream.mjs",
     "smoke:proto": "tsx scripts/smoke-proto.mjs",
     "smoke:stream": "tsx scripts/smoke-stream.mjs",
+    "smoke:connect-errors": "tsx scripts/smoke-connect-errors.mjs",
+    "smoke:native-error-boundary": "tsx scripts/smoke-native-error-boundary.mjs",
     "smoke:connect": "tsx scripts/smoke-connect.mjs",
     "smoke:balance": "tsx scripts/smoke-balance.mjs",
     "smoke:config": "tsx scripts/smoke-config.mjs",
     "smoke:providers": "tsx scripts/smoke-providers.mjs",
+    "smoke:provider-replay": "tsx scripts/smoke-provider-replay.mjs",
     "smoke:prompts": "tsx scripts/smoke-prompts.mjs",
     "smoke:mitm": "node scripts/smoke-mitm.mjs",
     "smoke:background": "tsx scripts/smoke-background.mjs",
     "smoke:cursor-integration": "tsx scripts/smoke-cursor-integration.mjs",
     "smoke:history-key": "tsx scripts/smoke-history-key.mjs",
+    "smoke:history-rewind": "tsx scripts/smoke-history-rewind.mjs",
+    "smoke:history-retry": "tsx scripts/smoke-history-retry.mjs",
     "smoke:context-limit": "tsx scripts/smoke-context-limit.mjs",
+    "smoke:context-compaction": "tsx scripts/smoke-context-compaction.mjs",
+    "smoke:summary-checkpoint": "tsx scripts/smoke-summary-checkpoint.mjs",
+    "smoke:conversation-state": "tsx scripts/smoke-conversation-state.mjs",
+    "smoke:conversation-state-replay": "tsx scripts/smoke-conversation-state-replay.mjs",
+    "smoke:prompt-context": "tsx scripts/smoke-prompt-context.mjs",
+    "smoke:prompt-context-derive": "tsx scripts/smoke-prompt-context-derive.mjs",
+    "smoke:normal-turn": "tsx scripts/smoke-normal-turn-regression.mjs",
+    "smoke:empty-resume": "tsx scripts/smoke-empty-resume.mjs",
+    "smoke:reconnect-after-error": "tsx scripts/smoke-reconnect-after-error.mjs",
+    "smoke:failure-accounting": "tsx scripts/smoke-failure-accounting.mjs",
+    "smoke:provider-history-failure": "tsx scripts/smoke-provider-history-failure.mjs",
+    "smoke:context-recovery": "tsx scripts/smoke-context-recovery.mjs",
+    "smoke:thought-annotation": "tsx scripts/smoke-thought-annotation.mjs",
+    "smoke:prewarm": "tsx scripts/smoke-prewarm.mjs",
+    "smoke:append-seq": "tsx scripts/smoke-append-seq.mjs",
+    "smoke:actor": "tsx scripts/smoke-active-stream-actor.mjs",
+    "smoke:broker-gc": "tsx scripts/smoke-broker-gc.mjs",
+    "smoke:interaction-lifecycle": "tsx scripts/smoke-interaction-lifecycle.mjs",
+    "smoke:protocol-parity": "tsx scripts/smoke-protocol-parity.mjs",
+    "smoke:history-lineage": "tsx scripts/smoke-history-lineage.mjs",
+    "smoke:history-persistence": "tsx scripts/smoke-history-persistence.mjs",
+    "smoke:history-loop": "tsx scripts/smoke-history-loop.mjs",
+    "smoke:conversation-lane": "tsx scripts/smoke-conversation-lane.mjs",
+    "smoke:superseded-conversation": "tsx scripts/smoke-superseded-conversation.mjs",
     "smoke:skills": "tsx scripts/smoke-skills.mjs",
     "smoke:fixtures": "tsx scripts/smoke-protocol-fixtures.mjs",
     "smoke:routing": "tsx scripts/smoke-routing.mjs",
     "smoke:cancel": "tsx scripts/smoke-cancel.mjs",
+    "smoke:orphan-stream": "tsx scripts/smoke-orphan-stream.mjs",
+    "smoke:terminal-stream-cleanup": "tsx scripts/smoke-terminal-stream-cleanup.mjs",
     "smoke:proxy-inject": "tsx scripts/smoke-proxy-inject.mjs",
     "smoke:stage2": "tsx scripts/smoke-stage2-providers.mjs",
     "smoke:stage3": "tsx scripts/smoke-stage3-usage.mjs",
@@ -121,7 +158,8 @@
   "build": {
     "appId": "com.cursor-studio.app",
     "productName": "Cursor Studio",
-    "copyright": "Copyright (c) 2026 Cursor Studio",
+    "copyright": "Copyright © 2026 李初一",
+    "afterSign": "scripts/after-sign.mjs",
     "directories": {
       "output": "release",
       "buildResources": "resources"
@@ -136,12 +174,19 @@
         "from": "resources",
         "to": "resources",
         "filter": [
-          "**/*"
+          "ads.json",
+          "icon-runtime.png",
+          "prompts/**/*"
         ]
       }
     ],
+    "electronDist": "node_modules/electron/dist",
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
+    "beforeBuild": "scripts/before-build.mjs",
     "asar": true,
-    "npmRebuild": false,
     "win": {
       "target": [
         {
@@ -151,8 +196,9 @@
           ]
         }
       ],
-      "icon": "resources/icon-round.png",
-      "signAndEditExecutable": false
+      "icon": "resources/icon.ico",
+      "executableName": "Cursor Studio",
+      "signExecutable": false
     },
     "msi": {
       "artifactName": "Cursor Studio.msi",

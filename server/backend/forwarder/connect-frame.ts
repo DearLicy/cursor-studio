@@ -1,10 +1,19 @@
+import {
+  brotliDecompressSync,
+  gunzipSync,
+  inflateSync,
+} from "node:zlib";
+
 /**
  * Connect 协议 envelope（gRPC-Web / Connect unary/stream 帧）。
  * 帧格式：1 byte flags + 4 byte big-endian length + payload
- * flags bit0 = compressed（本阶段不解压，原样透传）
+ * flags bit0 marks a compressed payload; unwrapRequestBody decodes it with
+ * Connect-Content-Encoding before protocol parsing.
  */
 export const CONNECT_FLAG_COMPRESSED = 0x01;
 export const CONNECT_FLAG_END_STREAM = 0x02;
+
+const MAX_CONNECT_PAYLOAD_BYTES = 64 * 1024 * 1024;
 
 export type ConnectFrame = {
   flags: number;
@@ -70,7 +79,35 @@ export function decodeConnectFrames(buf: Buffer): {
  * 若 body 是 Connect envelope，解出 payload；否则原样返回。
  * 用于 BidiAppend / unary 请求兼容「裸 JSON」与「Connect 帧包 JSON/二进制」。
  */
-export function unwrapRequestBody(buf: Buffer): Buffer {
+function decodeCompressedPayload(
+  payload: Buffer,
+  contentEncoding: string | string[] | undefined,
+): Buffer {
+  const encoding = (Array.isArray(contentEncoding)
+    ? contentEncoding[0]
+    : contentEncoding || "")
+    .trim()
+    .toLowerCase();
+  const options = { maxOutputLength: MAX_CONNECT_PAYLOAD_BYTES };
+  switch (encoding) {
+    case "gzip":
+    case "x-gzip":
+      return gunzipSync(payload, options);
+    case "deflate":
+      return inflateSync(payload, options);
+    case "br":
+      return brotliDecompressSync(payload, options);
+    default:
+      throw new Error(
+        `compressed Connect frame is missing a supported connect-content-encoding: ${encoding || "none"}`,
+      );
+  }
+}
+
+export function unwrapRequestBody(
+  buf: Buffer,
+  connectContentEncoding?: string | string[],
+): Buffer {
   if (!buf || buf.length < 5) return buf;
   // 启发式：flags 仅低 2 位有意义，且 length 合理
   const flags = buf[0];
@@ -78,11 +115,18 @@ export function unwrapRequestBody(buf: Buffer): Buffer {
   const len = buf.readUInt32BE(1);
   if (len <= 0 || len > 16 * 1024 * 1024) return buf;
   if (buf.length === 5 + len) {
-    return Buffer.from(buf.subarray(5));
+    const payload = Buffer.from(buf.subarray(5));
+    return (flags & CONNECT_FLAG_COMPRESSED) !== 0
+      ? decodeCompressedPayload(payload, connectContentEncoding)
+      : payload;
   }
   // 多帧：拼第一帧 payload（unary 常见单帧）
   const frame = decodeConnectFrame(buf);
-  if (frame && !frame.compressed) return frame.payload;
+  if (frame) {
+    return frame.compressed
+      ? decodeCompressedPayload(frame.payload, connectContentEncoding)
+      : frame.payload;
+  }
   return buf;
 }
 

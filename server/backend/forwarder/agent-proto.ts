@@ -33,6 +33,7 @@ export type DecodedAgentClient = {
     | "exec_client_message"
     | "exec_client_control_message"
     | "conversation_action"
+    | "summarize_action"
     | "client_heartbeat"
     | "prewarm_request"
     | "kv_client_message"
@@ -44,13 +45,117 @@ export type DecodedAgentClient = {
   /** True when Cursor selected an image, even if its bytes need a later fallback. */
   hasImageAttachment?: boolean;
   mode?: number;
+  /** Concrete ConversationAction oneof branch. */
+  conversationAction?: ConversationActionKind;
+  /** Whether a ResumeAction carries a non-empty RequestContext payload. */
+  hasRequestContextPayload?: boolean;
+  /** Whether ConversationStateStructure has pending tool calls to resume. */
+  hasPendingToolCalls?: boolean;
   modelHint?: string;
   conversationId?: string;
+  /** Cursor UserMessage.message_id (string, distinct from exec message IDs). */
+  userMessageId?: string;
+  /** Number of persisted Cursor turns carried by RunRequest.conversation_state. */
+  conversationTurnCount?: number;
+  /** Raw ConversationStateStructure from RunRequest or PrewarmRequest. */
+  conversationState?: Buffer;
   execId?: string;
   messageId?: number;
+  /** Incremental output sent by Cursor while it executes Shell locally. */
+  shellStream?: {
+    event?:
+      | "stdout"
+      | "stderr"
+      | "exit"
+      | "start"
+      | "rejected"
+      | "permission_denied"
+      | "backgrounded";
+    stdout?: string;
+    stderr?: string;
+    exitCode?: number;
+    cwd?: string;
+    aborted?: boolean;
+    shellId?: string;
+    command?: string;
+    workingDirectory?: string;
+    pid?: number;
+    error?: string;
+  };
+  backgroundShell?: {
+    kind: "spawn" | "force";
+    status: "backgrounded" | "rejected" | "permission_denied" | "error" | "unknown";
+    shellId?: string;
+    command?: string;
+    workingDirectory?: string;
+    pid?: number;
+    error?: string;
+  };
+  execControl?: {
+    kind: "stream_close" | "throw" | "heartbeat" | "unknown";
+    messageId?: number;
+    error?: string;
+  };
   /** 从结果 message 收集的文本摘要 */
   resultText?: string;
+  /** Typed InteractionResponse payload used for lifecycle decisions. */
+  interactionResponse?: DecodedInteractionResponse;
   rawKindField?: number;
+  /** Top-level AgentClientMessage oneof field selected by protobuf wire order. */
+  agentMessageField?: number;
+};
+
+export type DecodedInteractionAnswer = {
+  questionId: string;
+  selectedOptionIds: string[];
+  freeformText: string;
+};
+
+export type DecodedInteractionResponse = {
+  kind:
+    | "ask_question"
+    | "switch_mode"
+    | "create_plan"
+    | "web_search"
+    | "web_fetch"
+    | "unknown";
+  ok: boolean;
+  approved?: boolean;
+  rejected?: boolean;
+  async?: boolean;
+  reason?: string;
+  error?: string;
+  planUri?: string;
+  answers?: DecodedInteractionAnswer[];
+};
+
+export type ConversationActionKind =
+  | "user_message"
+  | "resume"
+  | "cancel"
+  | "summarize"
+  | "shell_command"
+  | "start_plan"
+  | "execute_plan"
+  | "async_ask_question_completion"
+  | "cancel_subagent"
+  | "background_task_completion"
+  | "background_shell"
+  | "background_subagent";
+
+const CONVERSATION_ACTION_BY_FIELD: Readonly<Record<number, ConversationActionKind>> = {
+  1: "user_message",
+  2: "resume",
+  3: "cancel",
+  4: "summarize",
+  5: "shell_command",
+  6: "start_plan",
+  7: "execute_plan",
+  8: "async_ask_question_completion",
+  10: "cancel_subagent",
+  12: "background_task_completion",
+  13: "background_shell",
+  14: "background_subagent",
 };
 
 const MODE_NAMES: Record<number, string> = {
@@ -224,6 +329,7 @@ function decodeUserMessage(
   blobs: BlobLookup = EMPTY_BLOB_LOOKUP,
 ): {
   text?: string;
+  userMessageId?: string;
   mode?: number;
   contentParts?: ChatContentPart[];
   hasImageAttachment?: boolean;
@@ -240,6 +346,7 @@ function decodeUserMessage(
   }
   return {
     text,
+    userMessageId: firstString(fields, 2)?.trim() || undefined,
     mode: firstVarint(fields, 4),
     contentParts: contentParts.length ? contentParts : undefined,
     hasImageAttachment,
@@ -251,6 +358,7 @@ function decodeUserMessageAction(
   blobs: BlobLookup = EMPTY_BLOB_LOOKUP,
 ): {
   text?: string;
+  userMessageId?: string;
   mode?: number;
   contentParts?: ChatContentPart[];
   hasImageAttachment?: boolean;
@@ -269,28 +377,69 @@ function decodeConversationAction(
   contentParts?: ChatContentPart[];
   hasImageAttachment?: boolean;
   mode?: number;
-  cancel?: boolean;
+  userMessageId?: string;
+  action?: ConversationActionKind;
+  hasRequestContextPayload?: boolean;
 } {
   const fields = decodeFields(buf);
   const texts: string[] = [];
   const contentParts: ChatContentPart[] = [];
   let hasImageAttachment = false;
   let mode: number | undefined;
+  let userMessageId: string | undefined;
+  // ConversationAction.action is a protobuf oneof. Generated decoders retain
+  // the last encoded branch, and every branch is a message (wire type 2).
+  const selectedAction = fields.reduce<(typeof fields)[number] | undefined>(
+    (selected, field) =>
+      field.wire === 2 &&
+      field.bytes !== undefined &&
+      CONVERSATION_ACTION_BY_FIELD[field.field]
+        ? field
+        : selected,
+    undefined,
+  );
+  const action = selectedAction
+    ? CONVERSATION_ACTION_BY_FIELD[selectedAction.field]
+    : undefined;
+  const actionBody = selectedAction?.bytes;
+  const hasRequestContextPayload = action === "resume" && actionBody
+    ? decodeFields(actionBody).some(
+        (field) =>
+          field.field === 2 &&
+          field.wire === 2 &&
+          Boolean(field.bytes?.length),
+      )
+    : false;
   // user_message_action = 1
-  const uma = firstBytes(fields, 1);
-  if (uma) {
-    const u = decodeUserMessageAction(uma, blobs);
+  if (action === "user_message" && actionBody) {
+    const u = decodeUserMessageAction(actionBody, blobs);
     if (u.text) texts.push(u.text);
     if (u.contentParts?.length) contentParts.push(...u.contentParts);
     hasImageAttachment ||= Boolean(u.hasImageAttachment);
     if (u.mode != null) mode = u.mode;
+    if (u.userMessageId) userMessageId = u.userMessageId;
   }
-  // cancel_action = 3
-  const cancel = firstBytes(fields, 3) != null || firstVarint(fields, 3) != null;
-  // shell_command_action = 5 → 取字符串
-  const shellAct = firstBytes(fields, 5);
-  if (shellAct) {
-    const shellTexts = collectStrings(shellAct, 4);
+  // start_plan_action = 6 embeds a UserMessage directly.
+  if (action === "start_plan" && actionBody) {
+    const startPlanFields = decodeFields(actionBody);
+    const userMessage = firstBytes(startPlanFields, 1);
+    if (userMessage) {
+      const u = decodeUserMessage(userMessage, blobs);
+      if (u.text) texts.push(u.text);
+      if (u.contentParts?.length) contentParts.push(...u.contentParts);
+      hasImageAttachment ||= Boolean(u.hasImageAttachment);
+      if (u.mode != null) mode = u.mode;
+      if (u.userMessageId) userMessageId = u.userMessageId;
+    }
+  }
+
+  if (action === "execute_plan" && actionBody) {
+    mode = firstVarint(decodeFields(actionBody), 5) ?? mode;
+  }
+
+  // shell_command_action = 5 carries command text in its nested payload.
+  if (action === "shell_command" && actionBody) {
+    const shellTexts = collectStrings(actionBody, 4);
     texts.push(...shellTexts);
     contentParts.push(...textContentParts(shellTexts));
   }
@@ -299,7 +448,9 @@ function decodeConversationAction(
     contentParts: contentParts.length ? contentParts : undefined,
     hasImageAttachment,
     mode,
-    cancel,
+    userMessageId,
+    action,
+    hasRequestContextPayload,
   };
 }
 
@@ -381,17 +532,30 @@ function decodeRunRequest(buf: Buffer): DecodedAgentClient {
   let hasImageAttachment = false;
   let mode: number | undefined;
   let modelHint: string | undefined;
+  let conversationAction: ConversationActionKind | undefined;
+  let hasRequestContextPayload = false;
+  let hasPendingToolCalls = false;
+  let userMessageId: string | undefined;
   const conversationId = firstString(fields, 5);
+  let conversationTurnCount: number | undefined;
   const preFetchedBlobs = decodePreFetchedBlobs(fields);
 
   // action = 2
-  const action = firstBytes(fields, 2);
+  // Repeated encodings of the singular action message merge. Concatenating
+  // their payloads preserves protobuf's last-oneof-branch-wins behavior.
+  const actionParts = fields
+    .filter((field) => field.field === 2 && field.wire === 2 && field.bytes !== undefined)
+    .map((field) => field.bytes as Buffer);
+  const action = actionParts.length ? Buffer.concat(actionParts) : undefined;
   if (action) {
     const ca = decodeConversationAction(action, preFetchedBlobs);
     texts.push(...ca.texts);
     if (ca.contentParts?.length) contentParts.push(...ca.contentParts);
     hasImageAttachment ||= Boolean(ca.hasImageAttachment);
     if (ca.mode != null) mode = ca.mode;
+    if (ca.userMessageId) userMessageId = ca.userMessageId;
+    conversationAction = ca.action;
+    hasRequestContextPayload = Boolean(ca.hasRequestContextPayload);
   }
 
   // requested_model = 9（优先：含 channel + thinking_effort）
@@ -408,25 +572,84 @@ function decodeRunRequest(buf: Buffer): DecodedAgentClient {
   const cs = firstBytes(fields, 1);
   if (cs) {
     const csFields = decodeFields(cs);
-    const m = firstVarint(csFields, 1) ?? firstVarint(csFields, 2);
+    conversationTurnCount = csFields.filter(
+      (field) => field.field === 8 && field.wire === 2 && Boolean(field.bytes),
+    ).length || undefined;
+    hasPendingToolCalls = csFields.some(
+      (field) => field.field === 4 && field.wire === 2 && Boolean(field.bytes?.length),
+    );
     // 宽松：扫描 mode enum
-    for (const f of csFields) {
-      if (f.wire === 0 && f.varint != null) {
-        const n = Number(f.varint);
-        if (n >= 1 && n <= 7 && mode == null) mode = n;
-      }
+    if (mode == null) {
+      const stateMode = Number(firstVarint(csFields, 10));
+      if (stateMode >= 1 && stateMode <= 7) mode = stateMode;
     }
-    void m;
   }
 
   return {
-    kind: "run_request",
+    // Cursor can place its explicit compaction command inside RunRequest.action.
+    // Keep that established transport shape distinct from a standalone action.
+    kind: conversationAction === "summarize" ? "summarize_action" : "run_request",
     texts,
     contentParts: contentParts.length ? contentParts : undefined,
     hasImageAttachment,
     mode,
+    conversationAction,
+    hasRequestContextPayload,
+    hasPendingToolCalls,
     modelHint,
     conversationId,
+    userMessageId,
+    conversationTurnCount,
+    ...(cs?.length ? { conversationState: Buffer.from(cs) } : {}),
+  };
+}
+
+/**
+ * PrewarmRequest intentionally has a different field layout from RunRequest.
+ * It carries route metadata only; its nested MCP/tool fields must never be
+ * interpreted as a user prompt.
+ */
+function decodePrewarmRequest(buf: Buffer): DecodedAgentClient {
+  const fields = decodeFields(buf);
+  const requestedModel = firstBytes(fields, 9);
+  const modelDetails = firstBytes(fields, 1);
+  const conversationState = firstBytes(fields, 3);
+  const stateFields = conversationState ? decodeFields(conversationState) : [];
+  const explicitMode = firstVarint(stateFields, 10);
+  let mode =
+    explicitMode != null && Number(explicitMode) >= 1 && Number(explicitMode) <= 7
+      ? Number(explicitMode)
+      : undefined;
+
+  // Older Cursor payloads occasionally use a compact state layout. Keep the
+  // existing permissive mode read, but prefer the documented field 10.
+  if (mode == null) {
+    for (const field of stateFields) {
+      if (field.wire !== 0 || field.varint == null) continue;
+      const value = Number(field.varint);
+      if (value >= 1 && value <= 7) {
+        mode = value;
+        break;
+      }
+    }
+  }
+
+  return {
+    kind: "prewarm_request",
+    texts: [],
+    modelHint: requestedModel
+      ? decodeRequestedModel(requestedModel)
+      : modelDetails
+        ? decodeModelDetails(modelDetails)
+        : undefined,
+    conversationId: firstString(fields, 2)?.trim() || undefined,
+    mode,
+    conversationTurnCount: stateFields.filter(
+      (field) => field.field === 8 && field.wire === 2 && Boolean(field.bytes),
+    ).length || undefined,
+    ...(conversationState?.length
+      ? { conversationState: Buffer.from(conversationState) }
+      : {}),
   };
 }
 
@@ -434,12 +657,148 @@ function decodeExecClientMessage(buf: Buffer): DecodedAgentClient {
   const fields = decodeFields(buf);
   const messageId = firstVarint(fields, 1);
   const execId = firstString(fields, 15);
+  const selectedMessage = lastMessageField(
+    fields,
+    new Set([
+      2, 3, 4, 5, 7, 8, 9, 10, 11, 14, 16, 17, 18, 20, 21, 22, 23,
+      27, 28, 29, 30, 31, 36, 37, 38,
+    ]),
+  );
+  if (selectedMessage?.field === 14 && selectedMessage.bytes) {
+    const shellStream = selectedMessage.bytes;
+    const streamFields = decodeFields(shellStream);
+    const event = lastMessageField(streamFields, new Set([1, 2, 3, 4, 5, 6, 7]));
+    const decodedStream: NonNullable<DecodedAgentClient["shellStream"]> = {};
+
+    if (event?.bytes) {
+      const eventFields = decodeFields(event.bytes);
+      switch (event.field) {
+        case 1:
+          decodedStream.event = "stdout";
+          decodedStream.stdout = firstString(eventFields, 1) || "";
+          break;
+        case 2:
+          decodedStream.event = "stderr";
+          decodedStream.stderr = firstString(eventFields, 1) || "";
+          break;
+        case 3: {
+          decodedStream.event = "exit";
+          const exitCode = firstVarint(eventFields, 1);
+          if (exitCode != null) decodedStream.exitCode = Number(exitCode);
+          decodedStream.cwd = firstString(eventFields, 2) || undefined;
+          decodedStream.aborted = firstVarint(eventFields, 4) === 1;
+          break;
+        }
+        case 4:
+          decodedStream.event = "start";
+          break;
+        case 5:
+          decodedStream.event = "rejected";
+          decodedStream.command = firstString(eventFields, 1) || undefined;
+          decodedStream.workingDirectory = firstString(eventFields, 2) || undefined;
+          decodedStream.error = firstString(eventFields, 3) || "shell rejected";
+          break;
+        case 6:
+          decodedStream.event = "permission_denied";
+          decodedStream.command = firstString(eventFields, 1) || undefined;
+          decodedStream.workingDirectory = firstString(eventFields, 2) || undefined;
+          decodedStream.error = firstString(eventFields, 3) || "shell permission denied";
+          break;
+        case 7: {
+          decodedStream.event = "backgrounded";
+          const shellId = firstVarint(eventFields, 1);
+          decodedStream.shellId = shellId == null ? undefined : String(shellId);
+          decodedStream.command = firstString(eventFields, 2) || undefined;
+          decodedStream.workingDirectory = firstString(eventFields, 3) || undefined;
+          const pid = firstVarint(eventFields, 4);
+          decodedStream.pid = pid == null ? undefined : Number(pid);
+          break;
+        }
+      }
+    }
+
+    return {
+      kind: "exec_client_message",
+      texts: [],
+      execId,
+      messageId,
+      shellStream: decodedStream,
+      rawKindField: 14,
+    };
+  }
+  if (selectedMessage?.field === 16 && selectedMessage.bytes) {
+    const resultFields = decodeFields(selectedMessage.bytes);
+    const branch = lastMessageField(resultFields, new Set([1, 2, 3, 4]));
+    const branchFields = branch?.bytes ? decodeFields(branch.bytes) : [];
+    const shellId = branch?.field === 1 ? firstVarint(branchFields, 1) : undefined;
+    const status = branch?.field === 1
+      ? "backgrounded"
+      : branch?.field === 3
+        ? "rejected"
+        : branch?.field === 4
+          ? "permission_denied"
+          : branch?.field === 2
+            ? "error"
+            : "unknown";
+    const success = branch?.field === 1;
+    const backgroundShell: NonNullable<DecodedAgentClient["backgroundShell"]> = {
+      kind: "spawn",
+      status,
+      shellId: shellId == null ? undefined : String(shellId),
+      command: firstString(branchFields, success ? 2 : 1) || undefined,
+      workingDirectory: firstString(branchFields, success ? 3 : 2) || undefined,
+      pid: success ? firstVarint(branchFields, 4) : undefined,
+      error: success
+        ? undefined
+        : firstString(branchFields, 3) || "background shell failed",
+    };
+    return {
+      kind: "exec_client_message",
+      texts: [],
+      execId,
+      messageId,
+      backgroundShell,
+      resultText: backgroundShell.status === "backgrounded"
+        ? `background shell started${backgroundShell.shellId ? ` id=${backgroundShell.shellId}` : ""}`
+        : `Error: ${backgroundShell.error || "background shell failed"}`,
+      rawKindField: 16,
+    };
+  }
+  if (selectedMessage?.field === 30 && selectedMessage.bytes) {
+    const forceFields = decodeFields(selectedMessage.bytes);
+    const statusValue = firstVarint(forceFields, 1);
+    const shellResult = firstBytes(forceFields, 2);
+    const shellResultFields = shellResult ? decodeFields(shellResult) : [];
+    const resultBranch = lastMessageField(shellResultFields, new Set([1, 2, 3, 4, 5, 7]));
+    const successFields = resultBranch?.field === 1 && resultBranch.bytes
+      ? decodeFields(resultBranch.bytes)
+      : [];
+    const shellId = firstVarint(successFields, 9);
+    const accepted = statusValue === 1;
+    return {
+      kind: "exec_client_message",
+      texts: [],
+      execId,
+      messageId,
+      backgroundShell: {
+        kind: "force",
+        status: accepted ? "backgrounded" : statusValue === 2 ? "error" : "unknown",
+        shellId: shellId == null ? undefined : String(shellId),
+        command: firstString(successFields, 1) || undefined,
+        workingDirectory: firstString(successFields, 2) || undefined,
+        pid: firstVarint(shellResultFields, 104),
+        error: accepted ? undefined : "force background shell target not found",
+      },
+      resultText: accepted
+        ? "force background shell accepted"
+        : "Error: force background shell target not found",
+      rawKindField: 30,
+    };
+  }
   // 结果 oneof：取所有嵌套字符串拼摘要
   const parts: string[] = [];
-  for (const f of fields) {
-    if (f.wire === 2 && f.bytes && f.field !== 15) {
-      parts.push(...collectStrings(f.bytes, 12));
-    }
+  if (selectedMessage?.bytes) {
+    parts.push(...collectStrings(selectedMessage.bytes, 12));
   }
   const resultText = parts
     .filter((s) => s.length < 8000 && !/^[0-9a-f-]{20,}$/i.test(s))
@@ -452,86 +811,290 @@ function decodeExecClientMessage(buf: Buffer): DecodedAgentClient {
     execId,
     messageId,
     resultText: resultText || undefined,
-    rawKindField: fields.find((f) => f.wire === 2 && f.field !== 15)?.field,
+    rawKindField: selectedMessage?.field,
   };
 }
 
 function decodeExecControl(buf: Buffer): DecodedAgentClient {
   const fields = decodeFields(buf);
+  const selectedMessage = lastMessageField(fields, new Set([1, 2, 3]));
+  const kind = selectedMessage?.field === 1
+    ? "stream_close"
+    : selectedMessage?.field === 2
+      ? "throw"
+      : selectedMessage?.field === 3
+        ? "heartbeat"
+        : "unknown";
+  const payload = selectedMessage?.bytes;
+  const payloadFields = payload ? decodeFields(payload) : [];
+  const messageId = firstVarint(payloadFields, 1);
   return {
     kind: "exec_client_control_message",
     texts: [],
-    messageId: firstVarint(fields, 1) ?? firstVarint(decodeFields(firstBytes(fields, 1) || Buffer.alloc(0)), 1),
+    messageId,
+    execControl: {
+      kind,
+      messageId,
+      error: kind === "throw" ? firstString(payloadFields, 2)?.trim() || undefined : undefined,
+    },
   };
 }
 
 /** 解码 AgentClientMessage 二进制 */
+function lastMessageField(
+  fields: ReturnType<typeof decodeFields>,
+  allowed: ReadonlySet<number>,
+) {
+  return fields.reduce<(typeof fields)[number] | undefined>(
+    (selected, field) =>
+      field.wire === 2 &&
+      field.bytes !== undefined &&
+      allowed.has(field.field)
+        ? field
+        : selected,
+    undefined,
+  );
+}
+
+function repeatedStrings(
+  fields: ReturnType<typeof decodeFields>,
+  fieldNumber: number,
+): string[] {
+  return fields
+    .filter(
+      (field) =>
+        field.field === fieldNumber &&
+        field.wire === 2 &&
+        field.bytes !== undefined,
+    )
+    .map((field) => (field.bytes as Buffer).toString("utf8"));
+}
+
+function decodeAskQuestionInteractionResponse(
+  responseBody: Buffer,
+): DecodedInteractionResponse {
+  const responseFields = decodeFields(responseBody);
+  const resultBody = firstBytes(responseFields, 1);
+  if (!resultBody) {
+    return {
+      kind: "ask_question",
+      ok: false,
+      error: "ask question response missing",
+    };
+  }
+  const resultFields = decodeFields(resultBody);
+  const branch = lastMessageField(resultFields, new Set([1, 2, 3, 4]));
+  if (!branch?.bytes) {
+    return {
+      kind: "ask_question",
+      ok: false,
+      error: "ask question result missing",
+    };
+  }
+  if (branch.field === 1) {
+    const successFields = decodeFields(branch.bytes);
+    const answers = successFields
+      .filter(
+        (field) =>
+          field.field === 1 &&
+          field.wire === 2 &&
+          field.bytes !== undefined,
+      )
+      .map((field) => {
+        const answerFields = decodeFields(field.bytes as Buffer);
+        return {
+          questionId: firstString(answerFields, 1) || "",
+          selectedOptionIds: repeatedStrings(answerFields, 2),
+          freeformText: firstString(answerFields, 3) || "",
+        };
+      });
+    return { kind: "ask_question", ok: true, answers };
+  }
+  if (branch.field === 3) {
+    return {
+      kind: "ask_question",
+      ok: false,
+      rejected: true,
+      reason: firstString(decodeFields(branch.bytes), 1) || "rejected",
+    };
+  }
+  if (branch.field === 4) {
+    return { kind: "ask_question", ok: true, async: true };
+  }
+  return {
+    kind: "ask_question",
+    ok: false,
+    error: firstString(decodeFields(branch.bytes), 1) || "ask question failed",
+  };
+}
+
+function decodeApprovalResponse(
+  kind: "switch_mode" | "web_search" | "web_fetch",
+  responseBody: Buffer,
+): DecodedInteractionResponse {
+  const branch = lastMessageField(decodeFields(responseBody), new Set([1, 2]));
+  if (!branch) {
+    return { kind, ok: false, error: `${kind} response missing` };
+  }
+  if (branch.field === 1) {
+    return { kind, ok: true, approved: true };
+  }
+  return {
+    kind,
+    ok: false,
+    rejected: true,
+    reason: branch.bytes
+      ? firstString(decodeFields(branch.bytes), 1) || "rejected"
+      : "rejected",
+  };
+}
+
+function decodeCreatePlanInteractionResponse(
+  responseBody: Buffer,
+): DecodedInteractionResponse {
+  const responseFields = decodeFields(responseBody);
+  const resultBody = firstBytes(responseFields, 1);
+  if (!resultBody) {
+    return {
+      kind: "create_plan",
+      ok: false,
+      error: "create plan response missing",
+    };
+  }
+  const resultFields = decodeFields(resultBody);
+  const planUri = firstString(resultFields, 3)?.trim() || "";
+  const branch = lastMessageField(resultFields, new Set([1, 2]));
+  if (branch?.field === 1 && planUri) {
+    return { kind: "create_plan", ok: true, planUri };
+  }
+  if (branch?.field === 1) {
+    return {
+      kind: "create_plan",
+      ok: false,
+      error: "create plan failed: Cursor returned success with empty planUri",
+    };
+  }
+  return {
+    kind: "create_plan",
+    ok: false,
+    error:
+      branch?.bytes
+        ? firstString(decodeFields(branch.bytes), 1) || "create plan failed"
+        : "create plan result missing",
+    ...(planUri ? { planUri } : {}),
+  };
+}
+
+function decodeInteractionResponse(buf: Buffer): {
+  messageId?: number;
+  response: DecodedInteractionResponse;
+  resultText: string;
+} {
+  const fields = decodeFields(buf);
+  const messageId = firstVarint(fields, 1);
+  const branch = lastMessageField(
+    fields,
+    new Set([2, 3, 4, 7, 8, 9, 10, 11, 12, 13]),
+  );
+  let response: DecodedInteractionResponse;
+  switch (branch?.field) {
+    case 2:
+      response = decodeApprovalResponse("web_search", branch.bytes as Buffer);
+      break;
+    case 3:
+      response = decodeAskQuestionInteractionResponse(branch.bytes as Buffer);
+      break;
+    case 4:
+      response = decodeApprovalResponse("switch_mode", branch.bytes as Buffer);
+      break;
+    case 7:
+      response = decodeCreatePlanInteractionResponse(branch.bytes as Buffer);
+      break;
+    case 9:
+      response = decodeApprovalResponse("web_fetch", branch.bytes as Buffer);
+      break;
+    default:
+      response = {
+        kind: "unknown",
+        ok: false,
+        error: "unsupported interaction response",
+      };
+  }
+
+  const resultText = response.ok
+    ? response.kind === "ask_question"
+      ? JSON.stringify({ answers: response.answers || [], async: response.async || false })
+      : response.kind === "create_plan"
+        ? `create plan success uri=${response.planUri}`
+        : `${response.kind} approved`
+    : response.rejected
+      ? `Rejected: ${response.reason || "rejected"}`
+      : `Error: ${response.error || "interaction failed"}`;
+  return { messageId, response, resultText };
+}
+
 export function decodeAgentClientMessage(buf: Buffer): DecodedAgentClient {
   if (!buf?.length) {
     return { kind: "unknown", texts: [] };
   }
   try {
     const fields = decodeFields(buf);
-    // oneof message
-    const run = firstBytes(fields, 1);
-    if (run) return decodeRunRequest(run);
+    // AgentClientMessage.message is also a oneof. Match proto.Unmarshal by
+    // retaining the last recognized message branch in wire order.
+    const selectedMessage = fields.reduce<(typeof fields)[number] | undefined>(
+      (selected, field) =>
+        field.wire === 2 &&
+        field.bytes !== undefined &&
+        field.field >= 1 &&
+        field.field <= 8
+          ? field
+          : selected,
+      undefined,
+    );
+    if (!selectedMessage) {
+      return { kind: "unknown", texts: [] };
+    }
+    const body = selectedMessage.bytes as Buffer;
 
-    const exec = firstBytes(fields, 2);
-    if (exec) return decodeExecClientMessage(exec);
-
-    const kv = firstBytes(fields, 3);
-    if (kv) return { kind: "kv_client_message", texts: [] };
-
-    const conv = firstBytes(fields, 4);
-    if (conv) {
-      const ca = decodeConversationAction(conv);
-      if (ca.cancel) {
+    switch (selectedMessage.field) {
+      case 1:
+        return { ...decodeRunRequest(body), agentMessageField: 1 };
+      case 2:
+        return { ...decodeExecClientMessage(body), agentMessageField: 2 };
+      case 3:
+        return { kind: "kv_client_message", texts: [], agentMessageField: 3 };
+      case 4: {
+        const ca = decodeConversationAction(body);
         return {
           kind: "conversation_action",
-          texts: [],
+          texts: ca.texts,
           contentParts: ca.contentParts,
           hasImageAttachment: ca.hasImageAttachment,
           mode: ca.mode,
+          conversationAction: ca.action,
+          agentMessageField: 4,
         };
       }
-      return {
-        kind: "conversation_action",
-        texts: ca.texts,
-        contentParts: ca.contentParts,
-        hasImageAttachment: ca.hasImageAttachment,
-        mode: ca.mode,
-      };
+      case 5:
+        return { ...decodeExecControl(body), agentMessageField: 5 };
+      case 6: {
+        const decoded = decodeInteractionResponse(body);
+        return {
+          kind: "interaction_response",
+          texts: [],
+          messageId: decoded.messageId,
+          resultText: decoded.resultText,
+          interactionResponse: decoded.response,
+          agentMessageField: 6,
+        };
+      }
+      case 7:
+        return { kind: "client_heartbeat", texts: [], agentMessageField: 7 };
+      case 8:
+        return { ...decodePrewarmRequest(body), agentMessageField: 8 };
     }
 
-    const execCtrl = firstBytes(fields, 5);
-    if (execCtrl) return decodeExecControl(execCtrl);
-
-    const interaction = firstBytes(fields, 6);
-    if (interaction) {
-      const ifs = decodeFields(interaction);
-      const messageId = firstVarint(ifs, 1);
-      const parts = collectStrings(interaction, 12);
-      const resultText = parts
-        .filter((s) => s.length < 8000)
-        .slice(0, 12)
-        .join("\n");
-      return {
-        kind: "interaction_response",
-        texts: parts.slice(0, 4),
-        messageId,
-        resultText: resultText || undefined,
-      };
-    }
-
-    const hb = firstBytes(fields, 7);
-    if (hb || firstVarint(fields, 7) != null) {
-      return { kind: "client_heartbeat", texts: [] };
-    }
-
-    const prewarm = firstBytes(fields, 8);
-    if (prewarm) return { kind: "prewarm_request", texts: collectStrings(prewarm, 4) };
-
-    return { kind: "unknown", texts: collectStrings(buf, 8) };
+    return { kind: "unknown", texts: [] };
   } catch {
     return { kind: "unknown", texts: [] };
   }
@@ -575,6 +1138,23 @@ export function encodeAgentClientRun(opts: {
   modelName?: string;
 }): Buffer {
   return encodeMessage(1, encodeRunRequest(opts));
+}
+
+/** Encodes the route-only prewarm shape used by Cursor before a real turn. */
+export function encodeAgentClientPrewarm(opts: {
+  conversationId: string;
+  modelName?: string;
+  mode?: number;
+}): Buffer {
+  const prewarm: Buffer[] = [encodeString(2, opts.conversationId)];
+  if (opts.modelName) {
+    prewarm.push(encodeMessage(9, encodeString(1, opts.modelName)));
+  }
+  if (opts.mode != null) {
+    // ConversationStateStructure.mode = 10.
+    prewarm.push(encodeMessage(3, encodeUint32(10, opts.mode)));
+  }
+  return encodeMessage(8, concatMessages(...prewarm));
 }
 
 export function encodeAgentClientExecResult(opts: {
@@ -971,6 +1551,80 @@ function encodeCreatePlanToolResult(text: string, ok: boolean): Buffer {
     );
   }
   return encodeMessage(2, encodeString(1, text));
+}
+
+function createPlanNumber(value: unknown): number {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? Math.trunc(numberValue) : 0;
+}
+
+function createPlanTodoStatus(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.min(4, Math.trunc(value)));
+  }
+  switch (String(value || "").trim().toLowerCase().replaceAll("-", "_")) {
+    case "pending":
+    case "todo_status_pending":
+      return 1;
+    case "in_progress":
+    case "inprogress":
+    case "todo_status_in_progress":
+      return 2;
+    case "completed":
+    case "complete":
+    case "todo_status_completed":
+      return 3;
+    case "cancelled":
+    case "canceled":
+    case "todo_status_cancelled":
+      return 4;
+    default:
+      return 0;
+  }
+}
+
+function encodeCreatePlanTodo(value: unknown): Buffer {
+  const todo = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+  const createdAt = createPlanNumber(todo.created_at ?? todo.createdAt);
+  const updatedAt = createPlanNumber(todo.updated_at ?? todo.updatedAt);
+  const dependencies = Array.isArray(todo.dependencies)
+    ? todo.dependencies.map(String).filter(Boolean)
+    : [];
+  return concatMessages(
+    encodeString(1, String(todo.id || "")),
+    encodeString(2, String(todo.content || "")),
+    encodeInt32(3, createPlanTodoStatus(todo.status)),
+    createdAt ? encodeInt64Force(4, createdAt) : Buffer.alloc(0),
+    updatedAt ? encodeInt64Force(5, updatedAt) : Buffer.alloc(0),
+    ...dependencies.map((dependency) => encodeString(6, dependency)),
+  );
+}
+
+function encodeCreatePlanPhase(value: unknown): Buffer {
+  const phase = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+  const todos = Array.isArray(phase.todos) ? phase.todos : [];
+  return concatMessages(
+    encodeString(1, String(phase.name || "")),
+    ...todos.map((todo) => encodeMessage(2, encodeCreatePlanTodo(todo))),
+  );
+}
+
+function encodeCreatePlanArgs(args: Record<string, unknown>): Buffer {
+  const todos = Array.isArray(args.todos) ? args.todos : [];
+  const phases = Array.isArray(args.phases) ? args.phases : [];
+  const isProject = Boolean(args.is_project ?? args.isProject);
+  return concatMessages(
+    encodeString(1, String(args.plan || "")),
+    ...todos.map((todo) => encodeMessage(2, encodeCreatePlanTodo(todo))),
+    encodeString(3, String(args.overview || "")),
+    encodeString(4, String(args.name || "")),
+    isProject ? encodeUint32(5, 1) : Buffer.alloc(0),
+    ...phases.map((phase) => encodeMessage(6, encodeCreatePlanPhase(phase))),
+  );
 }
 
 export function encodeAgentClientHeartbeat(): Buffer {
@@ -1419,6 +2073,14 @@ export function encodeAgentServerExec(opts: {
   return encodeMessage(2, encodeExecServerMessage(opts));
 }
 
+/** AgentServerMessage.exec_server_control_message.abort for a cancelled client exec. */
+export function encodeAgentServerExecAbort(opts: {
+  messageId: number;
+}): Buffer {
+  const abort = encodeMessage(1, encodeUint32(1, Math.max(0, Math.floor(opts.messageId))));
+  return encodeMessage(5, abort);
+}
+
 /** InteractionUpdate oneof 字段号（agent.v1.InteractionUpdate） */
 export const InteractionField = {
   text_delta: 1,
@@ -1428,6 +2090,9 @@ export const InteractionField = {
   thinking_completed: 5,
   partial_tool_call: 7,
   token_delta: 8,
+  summary: 9,
+  summary_started: 10,
+  summary_completed: 11,
   heartbeat: 13,
   turn_ended: 14,
   tool_call_delta: 15,
@@ -1469,7 +2134,12 @@ function normalizeCheckpointTokenCount(value: number): number {
 export function encodeConversationCheckpoint(opts: {
   usedTokens: number;
   maxTokens: number;
+  /** Complete ConversationStateStructure; token-only encoding remains the fallback. */
+  conversationState?: Buffer | Uint8Array;
 }): Buffer {
+  if (opts.conversationState?.length) {
+    return encodeMessage(3, Buffer.from(opts.conversationState));
+  }
   const tokenDetails = concatMessages(
     encodeUint32(1, normalizeCheckpointTokenCount(opts.usedTokens)),
     encodeUint32(2, normalizeCheckpointTokenCount(opts.maxTokens)),
@@ -1506,6 +2176,21 @@ export function encodeTokenDelta(tokens: number): Buffer {
   return wrapInteraction(
     InteractionField.token_delta,
     encodeInt32(1, Math.max(0, Math.round(tokens))),
+  );
+}
+
+export function encodeSummaryStarted(): Buffer {
+  return wrapInteraction(InteractionField.summary_started, Buffer.alloc(0));
+}
+
+export function encodeSummary(text: string): Buffer {
+  return wrapInteraction(InteractionField.summary, encodeString(1, text));
+}
+
+export function encodeSummaryCompleted(hookMessage?: string): Buffer {
+  return wrapInteraction(
+    InteractionField.summary_completed,
+    hookMessage ? encodeString(1, hookMessage) : Buffer.alloc(0),
   );
 }
 
@@ -1744,11 +2429,7 @@ export function encodeToolCallMessage(opts: {
       );
     }
     case "CreatePlan": {
-      const argsMsg = concatMessages(
-        encodeString(1, String(a.plan || "")),
-        encodeString(3, String(a.overview || "")),
-        encodeString(4, String(a.name || "")),
-      );
+      const argsMsg = encodeCreatePlanArgs(a);
       const parts = [encodeMessage(1, argsMsg)];
       if (hasResult) {
         parts.push(encodeMessage(2, encodeCreatePlanToolResult(text, ok)));
@@ -1827,6 +2508,9 @@ export type DecodedAgentServer = {
     | "text_delta"
     | "thinking_delta"
     | "thinking_completed"
+    | "summary"
+    | "summary_started"
+    | "summary_completed"
     | "tool_call_started"
     | "tool_call_completed"
     | "token_delta"
@@ -1834,6 +2518,8 @@ export type DecodedAgentServer = {
     | "turn_ended"
     | "conversation_checkpoint"
     | "exec_server_message"
+    | "exec_server_control_message"
+    | "interaction_query"
     | "unknown";
   text?: string;
   callId?: string;
@@ -1846,8 +2532,12 @@ export type DecodedAgentServer = {
   cacheWriteTokens?: number;
   usedTokens?: number;
   maxTokens?: number;
+  /** Raw ConversationStateStructure carried by a checkpoint update. */
+  conversationState?: Buffer;
   execId?: string;
   messageId?: number;
+  toolName?: string;
+  toolCallId?: string;
   interactionField?: number;
   /** ToolCall oneof 字段 + result oneof 摘要 */
   toolCall?: {
@@ -1892,6 +2582,20 @@ export function decodeAgentServerMessage(buf: Buffer): DecodedAgentServer {
             return {
               kind: "thinking_completed",
               durationMs: firstVarint(bf, 1),
+              interactionField: f.field,
+            };
+          case InteractionField.summary:
+            return {
+              kind: "summary",
+              text: firstString(bf, 1),
+              interactionField: f.field,
+            };
+          case InteractionField.summary_started:
+            return { kind: "summary_started", interactionField: f.field };
+          case InteractionField.summary_completed:
+            return {
+              kind: "summary_completed",
+              text: firstString(bf, 1),
               interactionField: f.field,
             };
           case InteractionField.tool_call_started:
@@ -1946,6 +2650,64 @@ export function decodeAgentServerMessage(buf: Buffer): DecodedAgentServer {
         mcpArgs: mcpBuf ? decodeMcpArgs(mcpBuf) : undefined,
       };
     }
+    const execControl = firstBytes(top, 5);
+    if (execControl) {
+      const controlFields = decodeFields(execControl);
+      const abort = firstBytes(controlFields, 1);
+      const abortFields = abort ? decodeFields(abort) : [];
+      return {
+        kind: "exec_server_control_message",
+        messageId: firstVarint(abortFields, 1),
+      };
+    }
+    const interactionQuery = firstBytes(top, 7);
+    if (interactionQuery) {
+      const queryFields = decodeFields(interactionQuery);
+      const query = queryFields.find(
+        (field) =>
+          field.wire === 2 &&
+          field.bytes &&
+          field.field !== 1,
+      );
+      const queryBody = query?.bytes ? decodeFields(query.bytes) : [];
+      const argsBody = firstBytes(queryBody, 1);
+      const argsFields = argsBody ? decodeFields(argsBody) : [];
+      let toolName = "";
+      let toolCallId = "";
+      switch (query?.field) {
+        case 2:
+          toolName = "WebSearch";
+          toolCallId = firstString(argsFields, 2) || "";
+          break;
+        case 3:
+          toolName = "AskQuestion";
+          toolCallId = firstString(queryBody, 2) || "";
+          break;
+        case 4:
+          toolName = "SwitchMode";
+          toolCallId = firstString(argsFields, 3) || "";
+          break;
+        case 7:
+          toolName = "CreatePlan";
+          toolCallId = firstString(queryBody, 2) || "";
+          break;
+        case 9:
+          toolName = "WebFetch";
+          toolCallId =
+            firstString(queryBody, 2) ||
+            firstString(argsFields, 2) ||
+            firstString(argsFields, 3) ||
+            "";
+          break;
+      }
+      return {
+        kind: "interaction_query",
+        messageId: firstVarint(queryFields, 1),
+        interactionField: query?.field,
+        toolName: toolName || undefined,
+        toolCallId: toolCallId || undefined,
+      };
+    }
     const checkpoint = firstBytes(top, 3);
     if (checkpoint) {
       const checkpointFields = decodeFields(checkpoint);
@@ -1955,12 +2717,26 @@ export function decodeAgentServerMessage(buf: Buffer): DecodedAgentServer {
         kind: "conversation_checkpoint",
         usedTokens: firstVarint(tokenFields, 1),
         maxTokens: firstVarint(tokenFields, 2),
+        conversationState: Buffer.from(checkpoint),
       };
     }
     return { kind: "unknown" };
   } catch {
     return { kind: "unknown" };
   }
+}
+
+/** JSON 形态（protojson camelCase）对齐 ExecServerControlMessage.abort. */
+export function buildAgentServerExecAbortJson(opts: {
+  messageId: number;
+}): Record<string, unknown> {
+  return {
+    execServerControlMessage: {
+      abort: {
+        id: Math.max(0, Math.floor(opts.messageId)),
+      },
+    },
+  };
 }
 
 /** JSON 形态（protojson camelCase）对齐 ExecServerMessage */
@@ -2190,6 +2966,7 @@ export function buildInteractionQueryJson(opts: {
               name: a.name != null ? String(a.name) : undefined,
               isProject: Boolean(a.is_project || a.isProject),
               todos: Array.isArray(a.todos) ? a.todos : undefined,
+              phases: Array.isArray(a.phases) ? a.phases : undefined,
             },
             toolCallId,
           },
@@ -2285,11 +3062,7 @@ export function encodeAgentServerInteractionQuery(opts: {
       break;
     }
     case "CreatePlan": {
-      const argsMsg = concatMessages(
-        encodeString(1, String(a.plan || "")),
-        encodeString(3, String(a.overview || "")),
-        encodeString(4, String(a.name || "")),
-      );
+      const argsMsg = encodeCreatePlanArgs(a);
       queryField = InteractionQueryField.create_plan_request_query;
       queryBody = Buffer.from(
         concatMessages(

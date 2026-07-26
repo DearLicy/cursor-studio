@@ -8,6 +8,8 @@
   --studio-line-2: rgba(17, 17, 19, 0.12);
   --studio-bg: #f4f4f5;
   --studio-surface: #ffffff;
+  --studio-paper: #ffffff;
+  --studio-paper-2: #f4f4f5;
   --studio-radius: 12px;
   --studio-danger: #dc2626;
   --studio-ok: #0f766e;
@@ -16,6 +18,12 @@
   --studio-glass-blur: 0px;
   --r: 8px;
   --r-lg: 12px;
+  --chrome-height: 52px;
+  --content-pad: 20px;
+  --dur-fast: 220ms;
+  --dur-med: 300ms;
+  --dur-slow: 1200ms;
+  --ease-out: cubic-bezier(0.22, 0.8, 0.25, 1);
 
   /* Shared workspace primitives. Page styles may specialise these, but the
      shell and reusable controls keep the same baseline everywhere. */

@@ -34,16 +34,19 @@ function candidateIconPaths(): string[] {
   const resourcesPath =
     typeof process.resourcesPath === "string" ? process.resourcesPath : "";
   return [
-    // 打包后 extraResources → resources/resources/*
+    // Packaged by extraResources for the tray and native windows.
+    resourcesPath ? path.join(resourcesPath, "resources", "icon-runtime.png") : "",
     resourcesPath ? path.join(resourcesPath, "resources", "icon-round.png") : "",
     resourcesPath ? path.join(resourcesPath, "resources", "icon.png") : "",
     resourcesPath ? path.join(resourcesPath, "resources", "icon.ico") : "",
     resourcesPath ? path.join(resourcesPath, "icon-round.png") : "",
     resourcesPath ? path.join(resourcesPath, "icon.png") : "",
     path.join(process.cwd(), "resources", "icon-round.png"),
+    path.join(process.cwd(), "resources", "icon-runtime.png"),
     path.join(process.cwd(), "resources", "icon.png"),
     path.join(process.cwd(), "resources", "icon.ico"),
     path.join(__dirname, "../resources/icon-round.png"),
+    path.join(__dirname, "../resources/icon-runtime.png"),
     path.join(__dirname, "../resources/icon.png"),
     path.join(__dirname, "../../resources/icon-round.png"),
     path.join(__dirname, "../../resources/icon.png"),

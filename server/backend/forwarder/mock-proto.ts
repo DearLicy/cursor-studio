@@ -308,10 +308,52 @@ export function encodePlanInfoProto(cursorIntegration?: CursorIntegrationConfig)
 }
 
 /** GetDefaultModelNudgeDataResponse: models_with_no_default_switch=1, nudge_date=2 */
-export function encodeDefaultModelNudgeProto(modelNames: string[]): Buffer {
+/**
+ * GetDefaultModelNudgeDataResponse.
+ *
+ * Cursor 3.13 uses nudge_date=1, should_default_switch_on_new_chat=2 and
+ * models_with_no_default_switch=3. Keeping these wire types exact matters:
+ * writing a string to field 2 makes the desktop client's protobuf decoder
+ * reject the entire model-picker response.
+ */
+export function encodeDefaultModelNudgeProto(
+  modelNames: string[],
+  nudgeDate = "0",
+  shouldDefaultSwitchOnNewChat = false,
+): Buffer {
   return concatMessages(
-    ...modelNames.map((n) => encodeString(1, n)),
-    encodeString(2, "0"),
+    encodeString(1, nudgeDate),
+    encodeBool(2, shouldDefaultSwitchOnNewChat),
+    ...modelNames.map((n) => encodeString(3, n)),
+  );
+}
+
+/** GetDefaultModelResponse. */
+export function encodeDefaultModelProto(
+  model: string,
+  thinkingModel = model,
+  maxMode = false,
+): Buffer {
+  return concatMessages(
+    encodeString(1, model),
+    encodeString(2, thinkingModel),
+    encodeBool(3, maxMode),
+  );
+}
+
+/** CountTokensResponse. Token details are optional for the local estimator. */
+export function encodeCountTokensProto(count: number): Buffer {
+  return encodeInt32(1, Math.max(0, Math.min(0x7fffffff, Math.round(count))));
+}
+
+/** Dashboard GetTokenUsageResponse. */
+export function encodeTokenUsageProto(
+  inputTokens: number,
+  outputTokens: number,
+): Buffer {
+  return concatMessages(
+    encodeInt32(1, Math.max(0, Math.min(0x7fffffff, Math.round(inputTokens)))),
+    encodeInt32(2, Math.max(0, Math.min(0x7fffffff, Math.round(outputTokens)))),
   );
 }
 
