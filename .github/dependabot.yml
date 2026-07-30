@@ -25,6 +25,16 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: vite
         update-types: ["version-update:semver-major"]
+      - dependency-name: electron
+        update-types: ["version-update:semver-major"]
+      - dependency-name: tailwindcss
+        update-types: ["version-update:semver-major"]
+      - dependency-name: concurrently
+        update-types: ["version-update:semver-major"]
+      - dependency-name: vite-plugin-electron
+        update-types: ["version-update:semver-major"]
+      - dependency-name: vite-plugin-electron-renderer
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
