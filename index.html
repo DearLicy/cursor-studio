@@ -1,11 +1,25 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Cursor Studio third-party model and workspace control panel" />
     <link rel="icon" type="image/png" href="./icon.png" />
-    <title>Cursor Studio v1.0.0</title>
+    <title>Cursor Studio v1.0.4</title>
+    <script>
+      (() => {
+        let locale = "";
+        try {
+          locale = window.localStorage.getItem("cursor-studio.locale") || "";
+        } catch {
+          // Access can be restricted before the desktop webview is fully ready.
+        }
+        if (locale !== "en" && locale !== "zh-CN") {
+          locale = /^zh(?:-|$)/i.test(window.navigator.language || "") ? "zh-CN" : "en";
+        }
+        document.documentElement.lang = locale;
+      })();
+    </script>
     <style>
       html, body, #root { height: 100%; margin: 0; }
       body {
@@ -17,11 +31,17 @@
         display: flex; align-items: center; justify-content: center;
         height: 100%; color: #999; font-size: 14px;
       }
+      #boot-fallback [lang] { display: none; }
+      html:lang(en) #boot-fallback [lang="en"],
+      html:lang(zh-CN) #boot-fallback [lang="zh-CN"] { display: inline; }
     </style>
   </head>
   <body>
     <div id="root">
-      <div id="boot-fallback">正在启动 Cursor Studio…</div>
+      <div id="boot-fallback" role="status" aria-live="polite">
+        <span lang="en">Starting Cursor Studio...</span>
+        <span lang="zh-CN">正在启动 Cursor Studio…</span>
+      </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

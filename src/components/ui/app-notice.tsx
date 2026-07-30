@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Toaster, toast as sonnerToast } from "sonner";
+import { translateUiText } from "@/lib/i18n";
 
 export type NoticeInput = {
   title?: string;
@@ -35,8 +36,10 @@ function notify(
   opts?: NoticeInput | string,
 ) {
   const normalized = normalizeOpts(message, opts);
-  sonnerToast[method](normalized.title, {
-    description: normalized.description,
+  sonnerToast[method](translateUiText(normalized.title), {
+    description: normalized.description
+      ? translateUiText(normalized.description)
+      : undefined,
     duration: normalized.duration,
   });
 }
@@ -46,6 +49,7 @@ export function AppNoticeProvider({ children }: { children: ReactNode }) {
     <>
       {children}
       <Toaster
+        className="app-notice-toaster"
         position="top-center"
         theme="light"
         richColors={false}

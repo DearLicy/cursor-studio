@@ -1,4 +1,14 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { toast } from "@/components/ui/app-notice";
 import {
   Activity,
@@ -28,8 +38,7 @@ import { Switch } from "@/components/ui/switch";
 import { EmptyState, Field } from "@/components/ui/layout";
 import { useConfirm } from "@/components/ui/confirm";
 import { SimpleSelect } from "@/components/ui/select";
-
-type BalanceMode = "none" | "newapi" | "sub2api";
+import { RawText } from "@/lib/i18n-raw";
 
 function initials(name: string): string {
   const normalized = name.trim();
@@ -70,6 +79,101 @@ function healthCopy(
   };
 }
 
+function secretFingerprint(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${value.length}:${(hash >>> 0).toString(36)}`;
+}
+
+function providerBalanceQueryKey(provider: ModelProvider): string {
+  return `${provider.baseURL.trim()}\n${secretFingerprint(provider.apiKey.trim())}`;
+}
+
+function retainProviderEntries<T>(
+  current: Record<string, T>,
+  providerIds: Set<string>,
+): Record<string, T> {
+  let changed = false;
+  const next: Record<string, T> = {};
+  for (const [providerId, value] of Object.entries(current)) {
+    if (providerIds.has(providerId)) next[providerId] = value;
+    else changed = true;
+  }
+  return changed ? next : current;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function numericField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = Number(record[key]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function adaptiveUsd(value: number): string {
+  const digits = value >= 100 ? 2 : value >= 1 ? 3 : 4;
+  return `$${value.toFixed(digits)}`;
+}
+
+function fixedUsd(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+function costMultiplierText(value: number | undefined): string {
+  return String(typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 1);
+}
+
+function localizedBalanceAmount(
+  result: ProviderBalanceResult | undefined,
+  t: TFunction,
+): string | undefined {
+  const raw = asRecord(result?.raw);
+  if (result?.type === "newapi" && raw?.object === "token_usage") {
+    if (raw.unlimited_quota === true) {
+      return String(t("balance.unlimitedQuota"));
+    }
+    const remaining = numericField(raw, "total_available");
+    if (remaining != null) {
+      return adaptiveUsd(Math.max(0, remaining) / 500_000);
+    }
+  }
+
+  const usage = result?.type === "sub2api" ? asRecord(raw?.usage) : undefined;
+  const quota = asRecord(usage?.quota);
+  const quotaRemaining = quota ? numericField(quota, "remaining") : undefined;
+  if (quota?.unit === "USD" && quotaRemaining != null) {
+    return fixedUsd(Math.max(0, quotaRemaining));
+  }
+  if (usage?.rate_limited === true) {
+    return String(t("balance.unlimitedQuota"));
+  }
+  if (usage?.unlimited === true) {
+    return String(t("balance.unlimitedQuota"));
+  }
+  const sub2ApiRemaining = usage ? numericField(usage, "remaining") : undefined;
+  if (sub2ApiRemaining != null) {
+    return sub2ApiRemaining < 0
+      ? String(t("balance.unlimitedQuota"))
+      : fixedUsd(sub2ApiRemaining);
+  }
+
+  const value = result?.balanceText?.trim();
+  if (!value) return undefined;
+  if (value === "Unlimited quota") {
+    return String(t("balance.unlimitedQuota"));
+  }
+  if (value === "Unlimited spending · rate limited") {
+    return String(t("balance.unlimitedQuota"));
+  }
+  return value.match(/^(\$[\d.]+)/)?.[1] || value;
+}
+
 export function ProvidersPage({
   providers,
   onChange,
@@ -88,6 +192,7 @@ export function ProvidersPage({
   returnToListTick?: number;
 }) {
   const api = getApi();
+  const { t } = useTranslation();
   const { confirm, ConfirmDialog } = useConfirm();
   const [editing, setEditing] = useState<ModelProvider | null>(null);
   const [busy, setBusy] = useState(false);
@@ -99,12 +204,41 @@ export function ProvidersPage({
   const [probingId, setProbingId] = useState<string | null>(null);
   const [refreshingModelId, setRefreshingModelId] = useState<string | null>(null);
   const [balanceResults, setBalanceResults] = useState<Record<string, ProviderBalanceResult>>({});
-  const [balanceBusy, setBalanceBusy] = useState(false);
+  const [balanceLoadingById, setBalanceLoadingById] = useState<Record<string, boolean>>({});
+  const [balanceErrorsById, setBalanceErrorsById] = useState<Record<string, string>>({});
   const [isReturningToDirectory, setIsReturningToDirectory] = useState(false);
   const saveRef = useRef<() => Promise<void>>(async () => undefined);
   const returnTimerRef = useRef<number | undefined>();
+  const balanceQueryByIdRef = useRef<Record<string, string>>({});
+  const balanceRequestByIdRef = useRef<Record<string, number>>({});
   const onEditingChangeRef = useRef(onEditingChange);
   onEditingChangeRef.current = onEditingChange;
+
+  const applyBalanceBatch = useCallback((
+    targetProviders: ModelProvider[],
+    balances: ProviderBalanceResult[],
+  ) => {
+    const resultById = Object.fromEntries(
+      balances.map((result) => [result.providerId, result]),
+    );
+    for (const provider of targetProviders) {
+      balanceQueryByIdRef.current[provider.id] = providerBalanceQueryKey(provider);
+    }
+    setBalanceResults((current) => ({ ...current, ...resultById }));
+    setBalanceErrorsById((current) => {
+      const next = { ...current };
+      for (const provider of targetProviders) {
+        if (resultById[provider.id]) delete next[provider.id];
+        else next[provider.id] = "查询未成功";
+      }
+      return next;
+    });
+    setBalanceLoadingById((current) => {
+      const next = { ...current };
+      for (const provider of targetProviders) delete next[provider.id];
+      return next;
+    });
+  }, []);
 
   const filteredModels = useMemo(() => {
     const query = modelFilter.trim().toLowerCase();
@@ -130,7 +264,6 @@ export function ProvidersPage({
   const openEdit = (provider: ModelProvider) => {
     setEditing({
       ...provider,
-      balance: provider.balance ? { ...provider.balance } : undefined,
       modelSettings: provider.modelSettings ? { ...provider.modelSettings } : undefined,
       models: provider.models ?? (provider.modelID ? [provider.modelID] : []),
     });
@@ -201,29 +334,151 @@ export function ProvidersPage({
   }, [api, providers]);
 
   useEffect(() => {
-    if (!editing?.balance || !providers.some((provider) => provider.id === editing.id)) return;
-    let active = true;
-    void api
-      .listProviderBalances(editing.id)
-      .then((result) => {
-        if (!active) return;
-        const resultForProvider = result.balances.find((item) => item.providerId === editing.id);
-        if (resultForProvider) {
-          setBalanceResults((current) => ({ ...current, [editing.id]: resultForProvider }));
-        }
+    const providerIds = new Set(providers.map((provider) => provider.id));
+    for (const providerId of Object.keys(balanceQueryByIdRef.current)) {
+      if (!providerIds.has(providerId)) delete balanceQueryByIdRef.current[providerId];
+    }
+    for (const providerId of Object.keys(balanceRequestByIdRef.current)) {
+      if (!providerIds.has(providerId)) delete balanceRequestByIdRef.current[providerId];
+    }
+    setBalanceResults((current) => retainProviderEntries(current, providerIds));
+    setBalanceLoadingById((current) => retainProviderEntries(current, providerIds));
+    setBalanceErrorsById((current) => retainProviderEntries(current, providerIds));
+
+    const configuredProviders = providers.filter(
+      (provider) => provider.baseURL.trim() && provider.apiKey.trim(),
+    );
+    const pendingProviders = configuredProviders.filter(
+      (provider) =>
+        balanceQueryByIdRef.current[provider.id] !== providerBalanceQueryKey(provider),
+    );
+    if (!pendingProviders.length) return;
+
+    const expectedKeys = Object.fromEntries(
+      pendingProviders.map((provider) => [provider.id, providerBalanceQueryKey(provider)]),
+    );
+    const expectedRequests = Object.fromEntries(
+      pendingProviders.map((provider) => [
+        provider.id,
+        (balanceRequestByIdRef.current[provider.id] || 0) + 1,
+      ]),
+    );
+    Object.assign(balanceQueryByIdRef.current, expectedKeys);
+    Object.assign(balanceRequestByIdRef.current, expectedRequests);
+    setBalanceResults((current) => {
+      const next = { ...current };
+      for (const provider of pendingProviders) delete next[provider.id];
+      return next;
+    });
+    setBalanceLoadingById((current) => ({
+      ...current,
+      ...Object.fromEntries(pendingProviders.map((provider) => [provider.id, true])),
+    }));
+    setBalanceErrorsById((current) => {
+      const next = { ...current };
+      for (const provider of pendingProviders) delete next[provider.id];
+      return next;
+    });
+
+    const request =
+      pendingProviders.length === configuredProviders.length
+        ? api.listProviderBalances()
+        : Promise.all(
+            pendingProviders.map((provider) => api.listProviderBalances(provider.id)),
+          ).then((batches) => ({ balances: batches.flatMap((batch) => batch.balances) }));
+
+    void request
+      .then(({ balances }) => {
+        const applicableResults = balances.filter(
+          (result) =>
+            expectedKeys[result.providerId] &&
+            balanceQueryByIdRef.current[result.providerId] === expectedKeys[result.providerId] &&
+            balanceRequestByIdRef.current[result.providerId] === expectedRequests[result.providerId],
+        );
+        const resultById = Object.fromEntries(
+          applicableResults.map((result) => [result.providerId, result]),
+        );
+        setBalanceResults((current) => ({ ...current, ...resultById }));
+        setBalanceErrorsById((current) => {
+          const next = { ...current };
+          for (const provider of pendingProviders) {
+            if (
+              balanceQueryByIdRef.current[provider.id] !== expectedKeys[provider.id] ||
+              balanceRequestByIdRef.current[provider.id] !== expectedRequests[provider.id]
+            ) continue;
+            if (resultById[provider.id]) delete next[provider.id];
+            else next[provider.id] = "查询未成功";
+          }
+          return next;
+        });
       })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [api, editing?.id]);
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setBalanceErrorsById((current) => {
+          const next = { ...current };
+          for (const provider of pendingProviders) {
+            if (
+              balanceQueryByIdRef.current[provider.id] === expectedKeys[provider.id] &&
+              balanceRequestByIdRef.current[provider.id] === expectedRequests[provider.id]
+            ) {
+              next[provider.id] = message;
+            }
+          }
+          return next;
+        });
+      })
+      .finally(() => {
+        setBalanceLoadingById((current) => {
+          const next = { ...current };
+          for (const provider of pendingProviders) {
+            if (
+              balanceQueryByIdRef.current[provider.id] === expectedKeys[provider.id] &&
+              balanceRequestByIdRef.current[provider.id] === expectedRequests[provider.id]
+            ) {
+              delete next[provider.id];
+            }
+          }
+          return next;
+        });
+      });
+  }, [api, providers]);
 
   const probe = async (provider: ModelProvider, event?: MouseEvent) => {
     event?.stopPropagation();
     if (probingId) return;
+    const balanceRequest = (balanceRequestByIdRef.current[provider.id] || 0) + 1;
+    balanceRequestByIdRef.current[provider.id] = balanceRequest;
     setProbingId(provider.id);
+    setBalanceLoadingById((current) => ({ ...current, [provider.id]: true }));
+    setBalanceErrorsById((current) => {
+      const next = { ...current };
+      delete next[provider.id];
+      return next;
+    });
     try {
-      const result = await api.probeProvider(provider);
+      const [probeResult, balanceResult] = await Promise.allSettled([
+        api.probeProvider(provider),
+        api.probeProviderBalance(provider),
+      ]);
+
+      if (balanceRequestByIdRef.current[provider.id] === balanceRequest) {
+        if (balanceResult.status === "fulfilled") {
+          applyBalanceBatch([provider], [balanceResult.value.balance]);
+        } else {
+          const message = balanceResult.reason instanceof Error
+            ? balanceResult.reason.message
+            : String(balanceResult.reason);
+          setBalanceErrorsById((current) => ({ ...current, [provider.id]: message }));
+          setBalanceLoadingById((current) => {
+            const next = { ...current };
+            delete next[provider.id];
+            return next;
+          });
+        }
+      }
+
+      if (probeResult.status === "rejected") throw probeResult.reason;
+      const result = probeResult.value;
       setHealthById((current) => ({ ...current, [provider.id]: result.health }));
       setHealthUnavailable(false);
       if (result.ok) {
@@ -326,6 +581,7 @@ export function ProvidersPage({
         enabled: provider.enabled,
         modelID: provider.modelID,
         openAIEndpoint: provider.openAIEndpoint,
+        costMultiplier: provider.costMultiplier,
         reasoningEffort: provider.reasoningEffort,
         balance: provider.balance,
       });
@@ -376,32 +632,10 @@ export function ProvidersPage({
     });
   };
 
-  const refreshBalance = async () => {
-    if (!editing || !editing.balance || balanceBusy) return;
-    setBalanceBusy(true);
-    try {
-      const result = await api.probeProviderBalance(editing);
-      setBalanceResults((current) => ({ ...current, [editing.id]: result.balance }));
-      if (result.balance.ok) {
-        toast.success("余额已更新");
-      } else {
-        toast.error("余额查询未成功", result.balance.error || "请检查相关信息");
-      }
-    } catch (error) {
-      toast.error(String(error));
-    } finally {
-      setBalanceBusy(false);
-    }
-  };
-
   const save = async () => {
     if (!editing || busy || fetching) return;
     if (!editing.displayName.trim() || !editing.apiKey.trim() || !editing.baseURL.trim()) {
       toast.error("请填写名称、服务地址和 API 密钥");
-      return;
-    }
-    if (editing.balance?.type === "newapi" && (!editing.balance.userId.trim() || !editing.balance.accessToken.trim())) {
-      toast.error("请填写用户 ID 和访问令牌");
       return;
     }
     const modelsList =
@@ -439,17 +673,6 @@ export function ProvidersPage({
   }, [saveTick]);
 
   if (editing) {
-    const balanceMode: BalanceMode = editing.balance?.type || "none";
-    const newApiBalance = editing.balance?.type === "newapi" ? editing.balance : null;
-    const balanceResult = balanceResults[editing.id];
-    const balanceText = balanceResult
-      ? balanceResult.ok
-        ? balanceResult.balanceText || "查询完成"
-        : balanceResult.error || "查询未成功"
-      : balanceMode === "none"
-        ? "未启用查询"
-        : "尚未查询";
-
     return (
       <div
         className={cn(
@@ -542,11 +765,23 @@ export function ProvidersPage({
                   />
                 </Field>
               ) : null}
+              <Field label="倍率" className="provider-editor-field">
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="1.0"
+                  value={editing.costMultiplier ?? 1}
+                  onChange={(event) =>
+                    setEditing({ ...editing, costMultiplier: Number(event.target.value) })
+                  }
+                />
+              </Field>
               <Field label="服务地址" className="provider-editor-field provider-editor-field--wide">
                 <Input
                   value={editing.baseURL}
                   onChange={(event) => setEditing({ ...editing, baseURL: event.target.value })}
-                  placeholder="https://api.example.com/v1"
+                  placeholder="https://api.example.com 或 https://api.example.com/v1"
                 />
               </Field>
               <Field label="API 密钥" className="provider-editor-field provider-editor-field--wide">
@@ -602,100 +837,6 @@ export function ProvidersPage({
             </div>
           </section>
 
-          <section className="provider-editor-section provider-editor-section--balance workspace-layer-enter workspace-layer-enter--delay-2" aria-label="余额">
-            <div className="provider-editor-section-bar">
-              <div className="provider-editor-section-heading">
-                <span className="provider-editor-section-icon is-green" aria-hidden="true">
-                  <Wallet />
-                </span>
-                <span>余额</span>
-              </div>
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                className="provider-icon-command"
-                title="刷新余额"
-                onClick={() => void refreshBalance()}
-                disabled={balanceMode === "none" || balanceBusy}
-              >
-                <RefreshCw className={cn("workspace-refresh-icon", balanceBusy && "is-spinning animate-spin")} />
-              </Button>
-            </div>
-            <div className="provider-editor-fields provider-balance-fields">
-              <Field label="查询方式" className="provider-editor-field">
-                <SimpleSelect
-                  value={balanceMode}
-                  onValueChange={(value) => {
-                    const mode = value as BalanceMode;
-                    setBalanceResults((current) => {
-                      const next = { ...current };
-                      delete next[editing.id];
-                      return next;
-                    });
-                    if (mode === "newapi") {
-                      setEditing({ ...editing, balance: { type: "newapi", userId: "", accessToken: "" } });
-                    } else if (mode === "sub2api") {
-                      setEditing({ ...editing, balance: { type: "sub2api" } });
-                    } else {
-                      setEditing({ ...editing, balance: undefined });
-                    }
-                  }}
-                  options={[
-                    { value: "none", label: "不查询" },
-                    { value: "newapi", label: "NewAPI" },
-                    { value: "sub2api", label: "Sub2API" },
-                  ]}
-                />
-              </Field>
-              {newApiBalance ? (
-                <>
-                  <Field label="用户 ID" className="provider-editor-field">
-                    <Input
-                      value={newApiBalance.userId}
-                      onChange={(event) =>
-                        setEditing({
-                          ...editing,
-                          balance: {
-                            type: "newapi",
-                            userId: event.target.value,
-                            accessToken: newApiBalance.accessToken,
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="访问令牌" className="provider-editor-field provider-editor-field--wide">
-                    <Input
-                      type="password"
-                      value={newApiBalance.accessToken}
-                      onChange={(event) =>
-                        setEditing({
-                          ...editing,
-                          balance: {
-                            type: "newapi",
-                            userId: newApiBalance.userId,
-                            accessToken: event.target.value,
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                </>
-              ) : null}
-              {editing.balance?.type === "sub2api" ? (
-                <p className="provider-balance-note provider-editor-field--wide">
-                  使用此供应商的服务地址和 API 密钥
-                </p>
-              ) : null}
-              <div className="provider-balance-result provider-editor-field--wide" aria-live="polite">
-                <span className={cn("provider-balance-result__icon", balanceResult?.ok && "is-ready")} aria-hidden="true">
-                  <Wallet />
-                </span>
-                <span>{balanceText}</span>
-              </div>
-            </div>
-          </section>
         </div>
       </div>
     );
@@ -739,6 +880,33 @@ export function ProvidersPage({
           providers.map((provider, index) => {
             const health = healthCopy(healthById[provider.id], healthStatusUnavailable);
             const modelCount = provider.models?.length || 0;
+            const balanceResult = balanceResults[provider.id];
+            const balanceError = balanceErrorsById[provider.id];
+            const balanceConfigured = Boolean(provider.baseURL.trim() && provider.apiKey.trim());
+            const balanceLoading = Boolean(
+              balanceConfigured &&
+                (balanceLoadingById[provider.id] || (!balanceResult && !balanceError)),
+            );
+            const balanceState = !balanceConfigured || balanceResult?.configured === false
+              ? "unconfigured"
+              : balanceLoading
+                ? "loading"
+                : balanceResult?.ok
+                  ? "ready"
+                  : "error";
+            const readyBalance = balanceState === "ready"
+              ? localizedBalanceAmount(balanceResult, t)
+              : undefined;
+            const balancePrimary = balanceState === "unconfigured"
+              ? "未配置"
+              : balanceState === "loading"
+                ? "加载中…"
+                : balanceState === "ready"
+                  ? readyBalance || "查询完成"
+                  : "查询未成功";
+            const balanceTitle = balanceState === "error"
+              ? balanceResult?.error || balanceError || balancePrimary
+              : balancePrimary;
             return (
               <article
                 className="provider-directory__row workspace-layer-enter"
@@ -746,27 +914,60 @@ export function ProvidersPage({
                 style={{ animationDelay: `${Math.min(index + 1, 4) * 60}ms` }}
               >
                 <div className="provider-directory__identity">
-                  <span className={cn("provider-directory__avatar", !provider.enabled && "is-disabled")}>
+                  <span className={cn("provider-directory__avatar", !provider.enabled && "is-disabled")} data-i18n-raw>
                     {initials(provider.displayName)}
                   </span>
                   <div>
                     <div className="provider-directory__name-line">
-                      <strong>{provider.displayName}</strong>
+                      <strong data-i18n-raw>{provider.displayName}</strong>
                       <span className={cn("provider-directory__state", provider.enabled ? "is-enabled" : "is-disabled")}>
                         {provider.enabled ? "启用" : "停用"}
                       </span>
                     </div>
-                    <span title={provider.baseURL}>{provider.baseURL}</span>
+                    <span title={provider.baseURL} data-i18n-raw>{provider.baseURL}</span>
                   </div>
                 </div>
                 <div className="provider-directory__model">
-                  <strong title={provider.modelID || undefined}>{provider.modelID || "未设置默认模型"}</strong>
+                  <strong
+                    title={provider.modelID || undefined}
+                    data-i18n-raw={Boolean(provider.modelID) || undefined}
+                  >
+                    {provider.modelID || "未设置默认模型"}
+                  </strong>
                   <span>{modelCount} 个模型</span>
+                </div>
+                <div
+                  className={cn("provider-directory__balance", `is-${balanceState}`)}
+                  aria-busy={balanceLoading}
+                  aria-live="polite"
+                  title={balanceTitle}
+                  data-i18n-raw={Boolean(
+                    balanceState === "error" && (balanceResult?.error || balanceError),
+                  ) || undefined}
+                >
+                  <span className="provider-directory__balance-icon" aria-hidden="true">
+                    {balanceLoading ? (
+                      <Loader2 className="workspace-refresh-icon is-spinning animate-spin" />
+                    ) : (
+                      <Wallet />
+                    )}
+                  </span>
+                  <div className="provider-directory__balance-copy">
+                    <strong>{balancePrimary}</strong>
+                    <span className="provider-directory__balance-multiplier">
+                      {t("balance.multiplier", { value: costMultiplierText(provider.costMultiplier) })}
+                    </span>
+                  </div>
                 </div>
                 <div className={cn("provider-directory__health", `is-${health.state}`)}>
                   <i aria-hidden="true" />
                   <strong>{health.label}</strong>
-                  <span title={health.detail}>{health.detail}</span>
+                  <span
+                    title={health.detail}
+                    data-i18n-raw={Boolean(healthById[provider.id]?.error) || undefined}
+                  >
+                    {health.detail}
+                  </span>
                 </div>
                 <div className="provider-directory__row-actions" data-no-drag>
                   <Switch
@@ -927,7 +1128,7 @@ function ModelCatalogEditor({
                 onClick={() => onDefaultChange(model.id)}
                 title="设为默认模型"
               >
-                {model.id}
+                <RawText>{model.id}</RawText>
               </button>
               <Button
                 type="button"

@@ -37,6 +37,7 @@ import {
   type McpServerSpec,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { RawText } from "@/lib/i18n-raw";
 
 const SAMPLE = `{
   "mcpServers": {
@@ -331,7 +332,7 @@ export function McpPage() {
         <section className="tools-workspace__error workspace-layer-enter workspace-layer-enter--delay-1" role="alert">
           <CircleAlert aria-hidden="true" />
           <strong>MCP 服务加载失败</strong>
-          <p>{loadError}</p>
+          <p data-i18n-raw>{loadError}</p>
           <Button type="button" variant="outline" size="sm" className="tools-workspace__text-action" onClick={() => void refresh()}>
             重试
           </Button>
@@ -392,8 +393,15 @@ export function McpPage() {
                           <Server />
                         </span>
                         <div className="tools-workspace__title-wrap">
-                          <strong className="tools-workspace__title" title={server.id}>{server.id}</strong>
-                          <span className="tools-workspace__meta">{mcpMeta(server)}</span>
+                          <strong className="tools-workspace__title" title={server.id} data-i18n-raw>
+                            {server.id}
+                          </strong>
+                          <span
+                            className="tools-workspace__meta"
+                            data-i18n-raw={Boolean(server.probe?.serverName) || undefined}
+                          >
+                            {mcpMeta(server)}
+                          </span>
                         </div>
                       </div>
                       <span className={cn("tools-workspace__status", status.className)}>{status.label}</span>
@@ -513,7 +521,7 @@ export function McpPage() {
       <Dialog open={Boolean(detail)} onOpenChange={(open) => !open && setDetail(null)}>
         <DialogContent className="tools-workspace__dialog" size="lg">
           <DialogHeader>
-            <DialogTitle>{detail?.id}</DialogTitle>
+            <DialogTitle><RawText>{detail?.id || ""}</RawText></DialogTitle>
             <DialogDescription>{detail ? detailDescription(detail) : ""}</DialogDescription>
           </DialogHeader>
           <DialogBody className="tools-workspace__dialog-body">
@@ -523,8 +531,8 @@ export function McpPage() {
                   <article key={tool.name} className="tools-workspace__tool-item">
                     <Wrench aria-hidden="true" />
                     <div>
-                      <strong>{tool.name}</strong>
-                      {tool.description ? <p>{tool.description}</p> : null}
+                      <strong data-i18n-raw>{tool.name}</strong>
+                      {tool.description ? <p data-i18n-raw>{tool.description}</p> : null}
                     </div>
                   </article>
                 ))}

@@ -1,3 +1,7 @@
+import type { UpdateMessage } from "../../shared/update-contract";
+
+export type { UpdateMessage, UpdateMessageCode } from "../../shared/update-contract";
+
 /** 控制面地址：可用 VITE_STUDIO_CONTROL 覆盖 */
 const CONTROL_BASE =
   (typeof import.meta !== "undefined" &&
@@ -43,6 +47,8 @@ export interface ModelProvider {
   reasoningEffort?: string;
   /** OpenAI 兼容出站：chat 或 responses（对该供应商全部模型生效） */
   openAIEndpoint?: OpenAIEndpoint;
+  /** Multiplier applied to estimated usage cost. */
+  costMultiplier?: number;
   /** Smaller value = higher failover priority */
   failoverPriority?: number;
   /** Unset means that balance probing is disabled for this provider. */
@@ -120,6 +126,7 @@ export interface AppConfig {
   balanceAccounts?: BalanceAccount[];
   profiles?: WorkspaceProfile[];
   activeProfileId?: string;
+  locale?: "system" | "en" | "zh-CN";
 }
 
 export interface WorkspaceProfile {
@@ -256,6 +263,7 @@ export interface RequestLogItem {
     tierThreshold?: number;
     cacheReadDerived?: boolean;
     cacheWriteDerived?: boolean;
+    multiplier?: number;
   };
   error?: string;
   requestId?: string;
@@ -297,6 +305,10 @@ export interface BalanceResult {
   type: BalanceKind;
   ok: boolean;
   balanceText?: string;
+  /** Whitelisted protocol fields returned by the balance probe. */
+  raw?: unknown;
+  /** Relative endpoint that produced the balance. */
+  endpoint?: string;
   error?: string;
   checkedAt: string;
   /** 兼容旧字段 */
@@ -608,7 +620,7 @@ export interface UpdateCheckResult {
   state: UpdateCheckState;
   currentVersion: string;
   checkedAt: string;
-  message?: string;
+  message?: UpdateMessage;
   update?: AppUpdateInfo;
   promotions?: HomePromotion[];
 }
@@ -623,7 +635,7 @@ export interface UpdateProgress {
 export interface UpdateInstallResult {
   state: "unsupported" | "not-configured" | "no-update" | "restarting" | "error";
   currentVersion: string;
-  message: string;
+  message: UpdateMessage;
   update?: AppUpdateInfo;
 }
 
@@ -693,6 +705,7 @@ export type StudioApi = {
     enabled?: boolean;
     modelID?: string;
     openAIEndpoint?: OpenAIEndpoint;
+    costMultiplier?: number;
     reasoningEffort?: string;
     balance?: ProviderBalanceConfig;
   }) => Promise<{
@@ -1067,20 +1080,20 @@ export const httpApi: StudioApi = {
   },
   checkForUpdates: async () => ({
     state: "unsupported",
-    currentVersion: "1.0.0",
+    currentVersion: "1.0.4",
     checkedAt: new Date().toISOString(),
-    message: "Please use the installed desktop app to check for updates.",
+    message: { code: "desktop-required-check" },
   }),
   getUpdateStatus: async () => ({
     state: "unsupported",
-    currentVersion: "1.0.0",
+    currentVersion: "1.0.4",
     checkedAt: new Date().toISOString(),
-    message: "Please use the installed desktop app to check for updates.",
+    message: { code: "desktop-required-check" },
   }),
   installUpdate: async () => ({
     state: "unsupported",
-    currentVersion: "1.0.0",
-    message: "Please use the installed desktop app to install updates.",
+    currentVersion: "1.0.4",
+    message: { code: "desktop-required-install" },
   }),
   onUpdateStatus: () => () => undefined,
   onUpdateProgress: () => () => undefined,

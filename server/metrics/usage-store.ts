@@ -10,6 +10,7 @@ import path from "node:path";
 import {
   studioHome,
   loadConfig,
+  normalizeCostMultiplier,
   saveConfig,
   type ModelProvider,
   type ModelSettings,
@@ -48,6 +49,7 @@ export type PriceSnapshot = {
   tierThreshold?: number;
   cacheReadDerived?: boolean;
   cacheWriteDerived?: boolean;
+  multiplier?: number;
 };
 
 export type RequestLogItem = {
@@ -187,6 +189,7 @@ export function resolvePriceSnapshot(
   provider: ModelProvider | undefined,
   modelID?: string,
 ): PriceSnapshot {
+  const multiplier = normalizeCostMultiplier(provider?.costMultiplier);
   const modelSettings: ModelSettings | undefined =
     provider && modelID ? provider.modelSettings?.[modelID] : undefined;
   const hasModel =
@@ -218,6 +221,7 @@ export function resolvePriceSnapshot(
         providerDefaults?.cacheWriteCostPerMillion ??
         DEFAULT_PRICE.cacheWrite,
       source: "model",
+      multiplier,
     };
   }
 
@@ -238,6 +242,7 @@ export function resolvePriceSnapshot(
       cacheWritePerMillion:
         providerDefaults.cacheWriteCostPerMillion ?? DEFAULT_PRICE.cacheWrite,
       source: "provider",
+      multiplier,
     };
   }
 
@@ -247,6 +252,7 @@ export function resolvePriceSnapshot(
     cacheReadPerMillion: DEFAULT_PRICE.cacheRead,
     cacheWritePerMillion: DEFAULT_PRICE.cacheWrite,
     source: "unavailable",
+    multiplier,
   };
 }
 
@@ -270,10 +276,31 @@ async function resolveRecordedPriceSnapshot(
   provider: ModelProvider | undefined,
   modelID: string | undefined,
   promptTokens: number,
+  previousSnapshot?: PriceSnapshot,
 ): Promise<PriceSnapshot> {
+  const multiplier = provider
+    ? normalizeCostMultiplier(provider.costMultiplier)
+    : normalizeCostMultiplier(previousSnapshot?.multiplier);
   const catalogPrice = await resolveModelsDevPrice(provider, modelID, promptTokens);
-  if (catalogPrice) return snapshotFromModelsDev(catalogPrice);
-  return resolvePriceSnapshot(provider, modelID);
+  if (catalogPrice) return { ...snapshotFromModelsDev(catalogPrice), multiplier };
+  const configuredPrice = resolvePriceSnapshot(provider, modelID);
+  if (provider || configuredPrice.source !== "unavailable" || !previousSnapshot) {
+    return { ...configuredPrice, multiplier };
+  }
+  return { ...previousSnapshot, multiplier };
+}
+
+function estimateSnapshotCost(
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  },
+  snapshot: PriceSnapshot,
+): number {
+  return estimateCost(usage, priceTableFromSnapshot(snapshot)) *
+    normalizeCostMultiplier(snapshot.multiplier);
 }
 
 function priceTableFromSnapshot(snapshot: PriceSnapshot): PriceTable {
@@ -336,6 +363,7 @@ export async function getHomeMetricsSummary(): Promise<HomeMetricsSummary> {
     getModelsDevPricingStatus(),
   ]);
   const t = file.totals;
+  const estimatedCostUsd = sumCurrentLogCost(file.logs, cfg.providers);
   return {
     turnsTotal: t.turnsTotal || 0,
     validTurnsTotal: t.validTurnsTotal || 0,
@@ -345,7 +373,7 @@ export async function getHomeMetricsSummary(): Promise<HomeMetricsSummary> {
     cacheReadTokens: t.cacheReadTokens || 0,
     cacheWriteTokens: t.cacheWriteTokens || 0,
     includeCacheWriteInHitRate: cfg.includeCacheWriteInHitRate === true,
-    estimatedCostUsd: sumCostFromTotals(t),
+    estimatedCostUsd,
     updatedAt: file.updatedAt,
     pricing,
   };
@@ -435,10 +463,57 @@ function matchLog(item: RequestLogItem, query: UsageQuery): boolean {
   return true;
 }
 
+function withCurrentMultiplier(
+  item: RequestLogItem,
+  providers: ModelProvider[],
+): RequestLogItem {
+  const provider = providers.find((candidate) => candidate.id === item.providerId);
+  const snapshot = item.priceSnapshot;
+  const multiplier = provider
+    ? normalizeCostMultiplier(provider.costMultiplier)
+    : normalizeCostMultiplier(snapshot?.multiplier);
+  if (!snapshot || snapshot.source === "unavailable") {
+    if (!provider && !snapshot) return item;
+    const recordedMultiplier = normalizeCostMultiplier(snapshot?.multiplier);
+    const baseCost = recordedMultiplier > 0 ? (item.costUsd || 0) / recordedMultiplier : 0;
+    return {
+      ...item,
+      costUsd: baseCost * multiplier,
+      priceSnapshot: snapshot ? { ...snapshot, multiplier } : snapshot,
+    };
+  }
+  return {
+    ...item,
+    costUsd: estimateSnapshotCost(
+      {
+        promptTokens: item.promptTokens,
+        completionTokens: item.completionTokens,
+        cacheReadTokens: item.cacheReadTokens,
+        cacheWriteTokens: item.cacheWriteTokens,
+      },
+      { ...snapshot, multiplier },
+    ),
+    priceSnapshot: { ...snapshot, multiplier },
+  };
+}
+
+function sumCurrentLogCost(
+  logs: RequestLogItem[],
+  providers: ModelProvider[],
+): number {
+  return logs.reduce(
+    (sum, item) =>
+      sum + Math.max(0, withCurrentMultiplier(item, providers).costUsd || 0),
+    0,
+  );
+}
+
 export async function queryUsage(query: UsageQuery = {}): Promise<UsageQueryResult> {
   const [file, cfg] = await Promise.all([readUsageFile(), loadConfig()]);
   const includeCacheWrite = cfg.includeCacheWriteInHitRate === true;
-  const matched = (file.logs || []).filter((item) => matchLog(item, query));
+  const matched = (file.logs || [])
+    .map((item) => withCurrentMultiplier(item, cfg.providers))
+    .filter((item) => matchLog(item, query));
   const limit = Math.min(Math.max(query.limit ?? 200, 1), 1000);
   const logs = matched.slice(0, limit);
 
@@ -539,6 +614,7 @@ export async function exportUsageCsv(query: UsageQuery = {}): Promise<string> {
     "cost_usd",
     "cost_estimated",
     "price_source",
+    "price_multiplier",
     "catalog_provider",
     "catalog_model",
     "input_per_m",
@@ -566,6 +642,9 @@ export async function exportUsageCsv(query: UsageQuery = {}): Promise<string> {
       row.costUsd,
       row.costEstimated === false ? "0" : "1",
       row.priceSnapshot?.source || "",
+      row.priceSnapshot
+        ? normalizeCostMultiplier(row.priceSnapshot.multiplier)
+        : "",
       row.priceSnapshot?.catalogProviderId || "",
       row.priceSnapshot?.catalogModelId || "",
       row.priceSnapshot?.inputPerMillion ?? "",
@@ -627,14 +706,14 @@ export async function recordTurnUsage(input: {
   const costUsd =
     snapshot.source === "unavailable"
       ? 0
-      : estimateCost(
+      : estimateSnapshotCost(
           {
             promptTokens,
             completionTokens,
             cacheReadTokens,
             cacheWriteTokens,
           },
-          priceTableFromSnapshot(snapshot),
+          snapshot,
         );
   const previousCost = Number.isFinite(t.estimatedCostUsd)
     ? Math.max(0, t.estimatedCostUsd || 0)
@@ -689,18 +768,19 @@ export async function refreshUsagePricing(): Promise<UsagePricingRefreshResult> 
       provider,
       log.modelID,
       log.promptTokens,
+      log.priceSnapshot,
     );
     const costUsd =
       snapshot.source === "unavailable"
         ? 0
-        : estimateCost(
+        : estimateSnapshotCost(
             {
               promptTokens: log.promptTokens,
               completionTokens: log.completionTokens,
               cacheReadTokens: log.cacheReadTokens,
               cacheWriteTokens: log.cacheWriteTokens,
             },
-            priceTableFromSnapshot(snapshot),
+            snapshot,
           );
 
     log.priceSnapshot = snapshot;

@@ -67,15 +67,38 @@ export function recordProviderSuccess(
   providerId: string,
   detail?: Partial<ProviderProbeResult>,
 ): ProviderHealth {
+  const previous = currentState(providerId);
   const next: ProviderHealth = {
     providerId,
     state: "healthy",
     consecutiveFailures: 0,
     checkedAt: new Date().toISOString(),
-    latencyMs: detail?.latencyMs,
-    status: detail?.status,
-    endpoint: detail?.endpoint,
-    modelCount: detail?.modelCount,
+    latencyMs: detail?.latencyMs ?? previous.latencyMs,
+    status: detail?.status ?? previous.status,
+    endpoint: detail?.endpoint ?? previous.endpoint,
+    modelCount: detail?.modelCount ?? previous.modelCount,
+  };
+  states.set(providerId, next);
+  return next;
+}
+
+export function recordProviderObservation(
+  providerId: string,
+  result: ProviderProbeResult,
+): ProviderHealth {
+  const previous = getProviderHealth(providerId);
+  const remainsOffline = previous.state === "offline" && Boolean(previous.openUntil);
+  const next: ProviderHealth = {
+    providerId,
+    state: remainsOffline ? "offline" : result.ok ? "healthy" : "degraded",
+    consecutiveFailures: previous.consecutiveFailures,
+    checkedAt: new Date().toISOString(),
+    latencyMs: result.latencyMs ?? previous.latencyMs,
+    status: result.status ?? previous.status,
+    endpoint: result.endpoint ?? previous.endpoint,
+    modelCount: result.modelCount ?? previous.modelCount,
+    ...(result.ok ? {} : { error: result.error || "Probe failed" }),
+    ...(previous.openUntil ? { openUntil: previous.openUntil } : {}),
   };
   states.set(providerId, next);
   return next;
@@ -113,16 +136,18 @@ export function recordProviderFailure(
 
 export async function probeProvider(
   provider: ModelProvider,
-  opts?: { batchId?: string },
+  opts?: { batchId?: string; affectCircuit?: boolean },
 ): Promise<ProviderProbeResult & { health: ProviderHealth }> {
   const result = await probeProviderEndpoint({
     type: provider.type,
     baseURL: provider.baseURL,
     apiKey: provider.apiKey,
   });
-  const health = result.ok
-    ? recordProviderSuccess(provider.id, result)
-    : recordProviderFailure(provider.id, result.error || "Probe failed", result);
+  const health = opts?.affectCircuit === false
+    ? recordProviderObservation(provider.id, result)
+    : result.ok
+      ? recordProviderSuccess(provider.id, result)
+      : recordProviderFailure(provider.id, result.error || "Probe failed", result);
   await appendProbeHistory({
     providerId: provider.id,
     displayName: provider.displayName,

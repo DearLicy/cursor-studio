@@ -28,6 +28,9 @@ import { Input } from "@/components/ui/input";
 import { Pagination, slicePage } from "@/components/ui/pagination";
 import { SimpleSelect } from "@/components/ui/select";
 import { useConfirm } from "@/components/ui/confirm";
+import { useCountUpProgress } from "@/lib/use-count-up-progress";
+import { currentIntlLocale } from "@/lib/i18n";
+import { RawText } from "@/lib/i18n-raw";
 import {
   getApi,
   type HomeMetrics,
@@ -103,7 +106,7 @@ function compactNumber(value: number): string {
   if (amount >= 1_000_000_000) return `${trimDecimal(amount / 1_000_000_000)}B`;
   if (amount >= 1_000_000) return `${trimDecimal(amount / 1_000_000)}M`;
   if (amount >= 1_000) return `${trimDecimal(amount / 1_000)}K`;
-  return Math.round(amount).toLocaleString();
+  return Math.round(amount).toLocaleString(currentIntlLocale());
 }
 
 function trimDecimal(value: number): string {
@@ -125,7 +128,7 @@ function formatPercent(value: number): string {
 function displayDate(value: string): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return value;
-  return date.toLocaleString([], {
+  return date.toLocaleString(currentIntlLocale(), {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -213,10 +216,10 @@ function buildTrend(logs: RequestLogItem[], range: RangeKey): TrendPoint[] {
     const pointEnd = pointStart + span;
     const midpoint = new Date(pointStart + span / 2);
     const label = range === "24h"
-      ? midpoint.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      : midpoint.toLocaleDateString([], { month: "numeric", day: "numeric" });
+      ? midpoint.toLocaleTimeString(currentIntlLocale(), { hour: "2-digit", minute: "2-digit" })
+      : midpoint.toLocaleDateString(currentIntlLocale(), { month: "numeric", day: "numeric" });
     const tooltipLabel = range === "24h"
-      ? `${new Date(pointStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} - ${new Date(pointEnd).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+      ? `${new Date(pointStart).toLocaleTimeString(currentIntlLocale(), { hour: "2-digit", minute: "2-digit" })} - ${new Date(pointEnd).toLocaleTimeString(currentIntlLocale(), { hour: "2-digit", minute: "2-digit" })}`
       : label;
     return {
       label,
@@ -408,9 +411,11 @@ function TrendLegendMark({ series }: { series: TrendSeries }) {
 function ProviderDistribution({
   stats,
   providerLabel,
+  progress,
 }: {
   stats: ProviderStat[];
   providerLabel: (id?: string) => string;
+  progress: number;
 }) {
   const [hoveredStripe, setHoveredStripe] = useState<number | null>(null);
   const totalRequests = stats.reduce((sum, item) => sum + item.requests, 0);
@@ -431,7 +436,7 @@ function ProviderDistribution({
     <div className="usage-dashboard__provider-content">
       <div className="usage-dashboard__provider-rate">
         <span>成功率</span>
-        <strong>{formatPercent(successRate)}</strong>
+        <strong>{formatPercent(successRate * progress)}</strong>
       </div>
       <div className="usage-dashboard__provider-stripes-wrap">
         <div
@@ -451,7 +456,7 @@ function ProviderDistribution({
         </div>
         {hovered ? (
           <div className="usage-dashboard__provider-tooltip" style={{ left: `${tooltipPosition}%` }}>
-            {providerLabel(hovered.name)} · {hovered.requests} 次 · {formatPercent(hoveredShare)}
+            <RawText>{providerLabel(hovered.name)}</RawText> · {hovered.requests} 次 · {formatPercent(hoveredShare)}
           </div>
         ) : null}
       </div>
@@ -463,12 +468,12 @@ function ProviderDistribution({
             <div className="usage-dashboard__provider-row" key={item.name}>
               <i style={{ backgroundColor: item.color }} />
               <div>
-                <strong title={providerLabel(item.name)}>{providerLabel(item.name)}</strong>
-                <span>{formatPercent(itemSuccessRate)} 成功率 · {compactNumber(item.tokens)} Tokens</span>
+                <strong title={providerLabel(item.name)} data-i18n-raw>{providerLabel(item.name)}</strong>
+                <span>{formatPercent(itemSuccessRate * progress)} 成功率 · {compactNumber(item.tokens * progress)} Tokens</span>
               </div>
               <aside>
-                <strong>{item.requests.toLocaleString()}</strong>
-                <span>{formatPercent(share)}</span>
+                <strong>{Math.round(item.requests * progress).toLocaleString(currentIntlLocale())}</strong>
+                <span>{formatPercent(share * progress)}</span>
               </aside>
             </div>
           );
@@ -575,7 +580,7 @@ function ActivityHeatmap({ logs }: { logs: RequestLogItem[] }) {
   return (
     <>
       <div className="usage-dashboard__activity-summary">
-        <strong>{totalRequests.toLocaleString()}</strong>
+        <strong>{totalRequests.toLocaleString(currentIntlLocale())}</strong>
         <span>{activityRange}</span>
       </div>
       <div ref={frameRef} className="usage-dashboard__heatmap-frame" onPointerLeave={() => setHovered(null)}>
@@ -598,7 +603,7 @@ function ActivityHeatmap({ logs }: { logs: RequestLogItem[] }) {
         </div>
         {hovered ? (
           <div className="usage-dashboard__heatmap-tooltip" style={{ left: `${hovered.x}px`, top: `${hovered.y}px` }} role="status">
-            {formatActivityDay(hovered.date)} · {hovered.requests.toLocaleString()} 次请求
+            {formatActivityDay(hovered.date)} · {hovered.requests.toLocaleString(currentIntlLocale())} 次请求
           </div>
         ) : null}
       </div>
@@ -612,7 +617,7 @@ function ActivityHeatmap({ logs }: { logs: RequestLogItem[] }) {
 }
 
 function formatActivityDay(value: Date): string {
-  return value.toLocaleDateString("zh-CN", { month: "long", day: "numeric" });
+  return value.toLocaleDateString(currentIntlLocale(), { month: "long", day: "numeric" });
 }
 
 function DashboardEmpty({ label, className }: { label: string; className?: string }) {
@@ -730,6 +735,20 @@ export function UsagePage() {
       successRate: requests > 0 ? valid / requests : 0,
     };
   }, [filtered, metrics?.includeCacheWriteInHitRate]);
+  const countUpKey = [
+    range,
+    provider,
+    model,
+    status,
+    source,
+    query,
+    summary.requests,
+    summary.tokens,
+    summary.cost,
+    summary.cacheRead,
+    summary.cacheWrite,
+  ].join(":");
+  const countUpProgress = useCountUpProgress(!loading, countUpKey);
 
   const providerStats = useMemo<ProviderStat[]>(() => {
     const rows = new Map<string, ProviderStat>();
@@ -937,7 +956,7 @@ export function UsagePage() {
 
       {error ? (
         <section className="usage-dashboard__error workspace-layer-enter workspace-layer-enter--delay-1">
-          <span>{error}</span>
+          <span data-i18n-raw>{error}</span>
           <Button type="button" variant="outline" size="sm" onClick={() => void refresh()}>重试</Button>
         </section>
       ) : null}
@@ -957,25 +976,25 @@ export function UsagePage() {
                 title="使用概览"
                 icon={<BarChart3 />}
                 detail={`${RANGE_LABELS[range]}内的本地代理请求`}
-                right={<span className="usage-dashboard__success-rate"><b>{formatPercent(summary.successRate)}</b> 成功率</span>}
+                right={<span className="usage-dashboard__success-rate"><b>{formatPercent(summary.successRate * countUpProgress)}</b> 成功率</span>}
               />
               <div className="usage-dashboard__overview-metrics">
                 <OverviewMetric
                   label="请求次数"
-                  value={compactNumber(summary.requests)}
-                  detail={summary.errors ? `${summary.errors} 次异常` : "请求运行正常"}
+                  value={compactNumber(summary.requests * countUpProgress)}
+                  detail={summary.errors ? `${Math.round(summary.errors * countUpProgress)} 次异常` : "请求运行正常"}
                   tone="blue"
                 />
                 <OverviewMetric
                   label="Token 用量"
-                  value={compactNumber(summary.tokens)}
-                  detail={`输入 ${compactNumber(summary.prompt)} · 输出 ${compactNumber(summary.completion)}`}
+                  value={compactNumber(summary.tokens * countUpProgress)}
+                  detail={`输入 ${compactNumber(summary.prompt * countUpProgress)} · 输出 ${compactNumber(summary.completion * countUpProgress)}`}
                   tone="violet"
                 />
                 <OverviewMetric
                   label="估算费用"
-                  value={formatUsd(summary.cost)}
-                  detail={summary.pricedRequests ? `${summary.pricedRequests} 条已定价` : "等待价格匹配"}
+                  value={formatUsd(summary.cost * countUpProgress)}
+                  detail={summary.pricedRequests ? `${Math.round(summary.pricedRequests * countUpProgress)} 条已定价` : "等待价格匹配"}
                   tone="green"
                 />
               </div>
@@ -985,7 +1004,7 @@ export function UsagePage() {
               <PanelHeading
                 title="缓存效率"
                 icon={<Gauge />}
-                right={<strong className="usage-dashboard__cache-rate">{formatPercent(summary.cacheHitRate)}</strong>}
+                right={<strong className="usage-dashboard__cache-rate">{formatPercent(summary.cacheHitRate * countUpProgress)}</strong>}
               />
               <div className="usage-dashboard__cache-body">
                 <div className="usage-dashboard__cache-ring" role="img" aria-label={`缓存命中率 ${formatPercent(summary.cacheHitRate)}`}>
@@ -998,13 +1017,13 @@ export function UsagePage() {
                         cy="56"
                         r="43"
                         pathLength="100"
-                        strokeDasharray={`${Math.max(0, Math.min(100, summary.cacheHitRate * 100))} 100`}
+                        strokeDasharray={`${Math.max(0, Math.min(100, summary.cacheHitRate * 100 * countUpProgress))} 100`}
                         transform="rotate(-90 56 56)"
                       />
                     ) : null}
                   </svg>
                   <span>
-                    <strong>{cacheTotal ? `${Math.round(summary.cacheHitRate * 100)}%` : "-"}</strong>
+                    <strong>{cacheTotal ? `${Math.round(summary.cacheHitRate * 100 * countUpProgress)}%` : "-"}</strong>
                     <small>{cacheTotal ? "命中" : "暂无数据"}</small>
                   </span>
                 </div>
@@ -1013,9 +1032,9 @@ export function UsagePage() {
                     <div key={segment.id} className={`is-${segment.id}`}>
                       <div>
                         <dt>{segment.label}</dt>
-                        <dd>{compactNumber(segment.value)}</dd>
+                        <dd>{compactNumber(segment.value * countUpProgress)}</dd>
                       </div>
-                      <span aria-hidden="true"><i style={{ width: `${segment.share * 100}%` }} /></span>
+                      <span aria-hidden="true"><i style={{ width: `${segment.share * 100 * countUpProgress}%` }} /></span>
                     </div>
                   ))}
                 </dl>
@@ -1035,7 +1054,7 @@ export function UsagePage() {
 
             <article className="usage-dashboard__panel usage-dashboard__provider-panel">
               <PanelHeading title="请求来源" icon={<Activity />} detail="按供应商分布" />
-              <ProviderDistribution stats={providerStats} providerLabel={providerLabel} />
+              <ProviderDistribution stats={providerStats} providerLabel={providerLabel} progress={countUpProgress} />
             </article>
           </section>
 
@@ -1048,7 +1067,7 @@ export function UsagePage() {
                 right={(
                   <span className={`usage-dashboard__pricing-summary is-${pricing?.state || "empty"}`}>
                     <i />
-                    {pricing?.state === "ready" ? `${pricing.catalogEntries.toLocaleString()} 个模型` : "等待价格目录"}
+                    {pricing?.state === "ready" ? `${Math.round(pricing.catalogEntries * countUpProgress).toLocaleString(currentIntlLocale())} 个模型` : "等待价格目录"}
                   </span>
                 )}
               />
@@ -1067,14 +1086,14 @@ export function UsagePage() {
                       {modelStats.map((item) => (
                         <tr key={item.name}>
                           <td>
-                            <strong title={item.name}>{item.name}</strong>
-                            <span>输入 {compactNumber(item.prompt)} · 输出 {compactNumber(item.completion)} · 缓存 {compactNumber(item.cacheRead)}</span>
+                            <strong title={item.name} data-i18n-raw>{item.name}</strong>
+                            <span>输入 {compactNumber(item.prompt * countUpProgress)} · 输出 {compactNumber(item.completion * countUpProgress)} · 缓存 {compactNumber(item.cacheRead * countUpProgress)}</span>
                           </td>
                           <td className={item.pricedRequests ? "is-priced" : "is-unpriced"}>
-                            {item.pricedRequests ? formatUsd(item.cost) : "待定价"}
+                            {item.pricedRequests ? formatUsd(item.cost * countUpProgress) : "待定价"}
                           </td>
-                          <td className="is-token">{compactNumber(item.tokens)}</td>
-                          <td className="is-request">{item.requests.toLocaleString()}</td>
+                          <td className="is-token">{compactNumber(item.tokens * countUpProgress)}</td>
+                          <td className="is-request">{Math.round(item.requests * countUpProgress).toLocaleString(currentIntlLocale())}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1084,8 +1103,8 @@ export function UsagePage() {
                 <DashboardEmpty label="当前范围内暂无模型计费数据" className="usage-dashboard__models-empty" />
               )}
               <footer className="usage-dashboard__models-footer">
-                <span>{modelMatches} 个模型已匹配价格</span>
-                {unpricedModels ? <span className="is-warning">{unpricedModels} 个模型等待匹配</span> : null}
+                <span>{Math.round(modelMatches * countUpProgress)} 个模型已匹配价格</span>
+                {unpricedModels ? <span className="is-warning">{Math.round(unpricedModels * countUpProgress)} 个模型等待匹配</span> : null}
               </footer>
             </article>
 
@@ -1100,7 +1119,7 @@ export function UsagePage() {
               <PanelHeading
                 title="请求明细"
                 icon={<Database />}
-                detail={`${filtered.length.toLocaleString()} 条匹配记录`}
+                detail={`${Math.round(filtered.length * countUpProgress).toLocaleString(currentIntlLocale())} 条匹配记录`}
               />
               <div className="usage-dashboard__filters">
                 <label>
@@ -1108,7 +1127,10 @@ export function UsagePage() {
                   <SimpleSelect
                     value={provider}
                     onValueChange={setProvider}
-                    options={[{ value: "all", label: "全部供应商" }, ...providers.map((item) => ({ value: item, label: providerLabel(item) }))]}
+                    options={[
+                      { value: "all", label: "全部供应商" },
+                      ...providers.map((item) => ({ value: item, label: providerLabel(item), raw: true })),
+                    ]}
                   />
                 </label>
                 <label>
@@ -1116,7 +1138,10 @@ export function UsagePage() {
                   <SimpleSelect
                     value={model}
                     onValueChange={setModel}
-                    options={[{ value: "all", label: "全部模型" }, ...models.map((item) => ({ value: item, label: item }))]}
+                    options={[
+                      { value: "all", label: "全部模型" },
+                      ...models.map((item) => ({ value: item, label: item, raw: true })),
+                    ]}
                   />
                 </label>
                 <label>
@@ -1164,18 +1189,30 @@ export function UsagePage() {
                         <tr key={item.id}>
                           <td className="is-time">{displayDate(item.at)}</td>
                           <td className="usage-dashboard__model-cell">
-                            <strong title={item.modelID || "未标记模型"}>{item.modelID || "未标记模型"}</strong>
-                            <span>{providerLabel(item.providerId)} · {requestSourceLabel(item.source)} · {sourceName(item.priceSnapshot?.source)}</span>
+                            <strong
+                              title={item.modelID || "未标记模型"}
+                              data-i18n-raw={Boolean(item.modelID) || undefined}
+                            >
+                              {item.modelID || "未标记模型"}
+                            </strong>
+                            <span>
+                              <RawText>{providerLabel(item.providerId)}</RawText> · {requestSourceLabel(item.source)} ·{" "}
+                              {sourceName(item.priceSnapshot?.source)}
+                            </span>
                           </td>
                           <td>{compactNumber(item.promptTokens)}</td>
                           <td>{compactNumber(item.completionTokens)}</td>
                           <td>读 {compactNumber(item.cacheReadTokens)}<br />写 {compactNumber(item.cacheWriteTokens)}</td>
-                          <td className={isPriced(item) ? "is-priced" : "is-unpriced"} title={item.priceSnapshot ? `输入 $${item.priceSnapshot.inputPerMillion}/1M · 输出 $${item.priceSnapshot.outputPerMillion}/1M` : undefined}>
+                          <td className={isPriced(item) ? "is-priced" : "is-unpriced"} title={item.priceSnapshot ? `输入 $${item.priceSnapshot.inputPerMillion}/1M · 输出 $${item.priceSnapshot.outputPerMillion}/1M · 倍率 ${item.priceSnapshot.multiplier ?? 1}x` : undefined}>
                             {isPriced(item) ? formatUsd(item.costUsd) : "待定价"}
                           </td>
                           <td>
-                            <span className={`usage-dashboard__status ${item.valid ? "is-success" : "is-error"}`} title={item.error}>
-                              {item.valid ? "成功" : "异常"}
+                            <span
+                              className={`usage-dashboard__status ${item.valid ? "is-success" : "is-error"}`}
+                              title={item.error}
+                              data-i18n-raw={Boolean(item.error) || undefined}
+                            >
+                              <span>{item.valid ? "成功" : "异常"}</span>
                             </span>
                           </td>
                         </tr>

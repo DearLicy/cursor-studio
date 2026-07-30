@@ -2,6 +2,7 @@ import * as React from "react";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { Check, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { RawText } from "@/lib/i18n-raw";
 
 export const Select = SelectPrimitive.Root;
 export const SelectValue = SelectPrimitive.Value;
@@ -93,7 +94,7 @@ export function SimpleSelect<T extends string>({
 }: {
   value: T;
   onValueChange: (v: T) => void;
-  options: { value: T; label: string }[];
+  options: { value: T; label: string; raw?: boolean }[];
   placeholder?: string;
   className?: string;
   disabled?: boolean;
@@ -106,7 +107,7 @@ export function SimpleSelect<T extends string>({
       <SelectContent>
         {options.map((opt) => (
           <SelectItem key={opt.value} value={opt.value}>
-            {opt.label}
+            {opt.raw ? <RawText>{opt.label}</RawText> : opt.label}
           </SelectItem>
         ))}
       </SelectContent>

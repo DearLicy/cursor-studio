@@ -34,6 +34,7 @@ import { EmptyState } from "@/components/ui/layout";
 import { useConfirm } from "@/components/ui/confirm";
 import { Pagination } from "@/components/ui/pagination";
 import { SimpleSelect } from "@/components/ui/select";
+import { RawText } from "@/lib/i18n-raw";
 
 type SessionViewMode = "recent" | "project";
 
@@ -530,17 +531,23 @@ export function SessionsPage() {
           onClick={() => selectSession(session.id)}
           aria-current={selected ? "page" : undefined}
         >
-          <span className="sessions-workspace__session-title" title={session.title}>{session.title}</span>
+          <span className="sessions-workspace__session-title" title={session.title} data-i18n-raw>
+            {session.title}
+          </span>
           <span className="sessions-workspace__session-meta">
             <time dateTime={session.updatedAt}>
               <Clock3 aria-hidden="true" /> {formatSessionTime(session.updatedAt)}
             </time>
             <span>
-              <Folder aria-hidden="true" /> {session.projectLabel}
+              <Folder aria-hidden="true" /> <RawText>{session.projectLabel}</RawText>
             </span>
           </span>
           <span className="sessions-workspace__session-bottom">
-            {session.preview ? <span className="sessions-workspace__session-preview">{session.preview}</span> : <span />}
+            {session.preview ? (
+              <span className="sessions-workspace__session-preview" data-i18n-raw>
+                {session.preview}
+              </span>
+            ) : <span />}
             <small>{messageCountLabel(session.messageCount)}</small>
           </span>
         </button>
@@ -570,7 +577,7 @@ export function SessionsPage() {
           >
             <span className="sessions-workspace__group-label">
               <Folder aria-hidden="true" />
-              <strong title={group.label}>{group.label}</strong>
+              <strong title={group.label} data-i18n-raw>{group.label}</strong>
             </span>
             <span className="sessions-workspace__group-count">{group.sessions.length}</span>
             <ChevronDown aria-hidden="true" />
@@ -663,7 +670,11 @@ export function SessionsPage() {
                 className="sessions-workspace__project-select"
                 options={[
                   { value: "all", label: `全部项目 (${allSessionCount})` },
-                  ...projects.map((item) => ({ value: item.project, label: `${item.label} (${item.count})` })),
+                  ...projects.map((item) => ({
+                    value: item.project,
+                    label: `${item.label} (${item.count})`,
+                    raw: true,
+                  })),
                 ]}
               />
               <div className="sessions-workspace__view-switch" role="group" aria-label="会话显示方式">
@@ -773,10 +784,10 @@ export function SessionsPage() {
                     <MessageSquare />
                   </span>
                   <div className="sessions-workspace__detail-title-copy">
-                    <h2 title={selectedSession.title}>{selectedSession.title}</h2>
+                    <h2 title={selectedSession.title} data-i18n-raw>{selectedSession.title}</h2>
                     <div className="sessions-workspace__detail-meta">
                       <span><Clock3 aria-hidden="true" /> {formatSessionDate(selectedSession.updatedAt)}</span>
-                      <span><Folder aria-hidden="true" /> {selectedSession.projectLabel}</span>
+                      <span><Folder aria-hidden="true" /> <RawText>{selectedSession.projectLabel}</RawText></span>
                     </div>
                   </div>
                 </div>
@@ -825,7 +836,7 @@ export function SessionsPage() {
                     <MessageSquare aria-hidden="true" />
                     <div>
                       <strong>无法读取对话记录</strong>
-                      <span>{detailError}</span>
+                      <span data-i18n-raw>{detailError}</span>
                     </div>
                     <Button
                       type="button"
@@ -861,7 +872,7 @@ export function SessionsPage() {
                           <span>{messageRoleLabel(message)}</span>
                           <small>{message.index + 1}</small>
                         </header>
-                        <div className="sessions-workspace__message-content">{message.text}</div>
+                        <div className="sessions-workspace__message-content" data-i18n-raw>{message.text}</div>
                         {message.truncated ? <p className="sessions-workspace__message-note">内容较长，仅显示开头部分。</p> : null}
                       </article>
                     );
@@ -899,7 +910,7 @@ export function SessionsPage() {
                 <li key={message.id}>
                   <button type="button" onClick={() => jumpToMessage(message.id)}>
                     <span>{index + 1}</span>
-                    <p>{messagePreview(message.text, 180)}</p>
+                    <p data-i18n-raw>{messagePreview(message.text, 180)}</p>
                   </button>
                 </li>
               ))}

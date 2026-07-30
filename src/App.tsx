@@ -7,12 +7,14 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ArrowLeft,
   BarChart3,
   Boxes,
   FileText,
   Home,
+  Languages,
   MessagesSquare,
   Plus,
   Save,
@@ -31,6 +33,7 @@ import {
   type HomePromotion,
   type SizeModel,
   type UpdateCheckResult,
+  type UpdateProgress,
 } from "@/lib/api";
 import { HomePage } from "@/pages/HomePage";
 import { ProvidersPage } from "@/pages/ProvidersPage";
@@ -42,8 +45,18 @@ import { SessionsPage } from "@/pages/SessionsPage";
 import { PromptsPage } from "@/pages/PromptsPage";
 import { cn } from "@/lib/utils";
 import { appIconUrl } from "@/lib/app-icon";
+import flagChina from "@/assets/flag-cn.svg";
+import flagUnitedStates from "@/assets/flag-us.svg";
+import { resolveLocale, setI18nLocale, type AppLocale } from "@/lib/i18n";
+import { translateUpdateMessage, updateMessageDetail } from "@/lib/update-message";
 import { AppNoticeProvider } from "@/components/ui/app-notice";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/layout";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from "@/components/ui/select";
 import { WindowControls } from "@/components/ui/window-controls";
 import {
   APP_RELEASE,
@@ -136,11 +149,22 @@ function toReleaseCheckResult(result: UpdateCheckResult): ReleaseCheckResult {
     status: "unavailable",
     currentVersion: formatReleaseVersion(result.currentVersion),
     checkedAt: result.checkedAt,
-    message: result.message,
+    message: translateUpdateMessage(result.message, "check-failed"),
   };
 }
 
-function AppWindowbar({ hasUpdate = false }: { hasUpdate?: boolean }) {
+function AppWindowbar({
+  hasUpdate = false,
+  locale,
+  onLocaleChange,
+}: {
+  hasUpdate?: boolean;
+  locale: AppLocale;
+  onLocaleChange: (locale: AppLocale) => void;
+}) {
+  const { t } = useTranslation();
+  const activeLocale = resolveLocale(locale);
+
   return (
     <header className="app-windowbar" data-drag-region>
       <div className="app-windowbar-brand">
@@ -154,6 +178,32 @@ function AppWindowbar({ hasUpdate = false }: { hasUpdate?: boolean }) {
         </span>
       </div>
       <div className="app-windowbar-actions" data-no-drag>
+        <Select
+          value={activeLocale}
+          onValueChange={(value) => onLocaleChange(value as Exclude<AppLocale, "system">)}
+        >
+          <SelectTrigger
+            className="app-language-trigger"
+            aria-label={t("language.title")}
+            title={t("language.title")}
+          >
+            <Languages aria-hidden="true" />
+          </SelectTrigger>
+          <SelectContent className="app-language-content" align="end">
+            <SelectItem value="en">
+              <span className="app-language-option">
+                <img className="app-language-flag" src={flagUnitedStates} alt="" />
+                <span>{t("language.english")}</span>
+              </span>
+            </SelectItem>
+            <SelectItem value="zh-CN">
+              <span className="app-language-option">
+                <img className="app-language-flag" src={flagChina} alt="" />
+                <span>{t("language.chineseSimplified")}</span>
+              </span>
+            </SelectItem>
+          </SelectContent>
+        </Select>
         <WindowControls />
       </div>
     </header>
@@ -161,6 +211,7 @@ function AppWindowbar({ hasUpdate = false }: { hasUpdate?: boolean }) {
 }
 
 function AppRoot() {
+  const { i18n: translationEngine } = useTranslation();
   const [view, setView] = useState<View>("home");
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -177,6 +228,7 @@ function AppRoot() {
   const [releasePromotions, setReleasePromotions] = useState<ReleasePromotion[]>([]);
   const [releaseChecking, setReleaseChecking] = useState(false);
   const [releaseInstalling, setReleaseInstalling] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
   const contentRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -185,6 +237,7 @@ function AppRoot() {
       try {
         const cfg = await (await waitForApi(8000)).getConfig();
         if (!cancelled) {
+          await setI18nLocale(cfg.locale || "system");
           setConfig(cfg);
           setPreviewAppearance(cfg.appearance);
           setError(null);
@@ -203,6 +256,7 @@ function AppRoot() {
   useEffect(() => {
     let disposed = false;
     let unsubscribe: () => void = () => undefined;
+    let unsubscribeProgress: () => void = () => undefined;
 
     void (async () => {
       try {
@@ -233,6 +287,9 @@ function AppRoot() {
             })
             .catch(() => undefined);
         });
+        unsubscribeProgress = api.onUpdateProgress((progress) => {
+          if (!disposed) setUpdateProgress(progress);
+        });
       } catch {
         // The rest of the app already reports a control-plane connection error.
       }
@@ -241,6 +298,7 @@ function AppRoot() {
     return () => {
       disposed = true;
       unsubscribe();
+      unsubscribeProgress();
     };
   }, []);
 
@@ -299,22 +357,25 @@ function AppRoot() {
         promotions: releasePromotions,
         availableUpdate:
           updateStatus?.state === "available" ? toReleaseUpdate(updateStatus.update) : null,
-        error: updateStatus?.state === "error" ? updateStatus.message || null : null,
+        error:
+          updateStatus?.state === "error"
+            ? translateUpdateMessage(updateStatus.message, "check-failed")
+            : null,
+        progress: updateProgress,
       },
       checkForUpdates: async () => {
         setReleaseChecking(true);
         try {
           const api = getApi();
-          const [status, promotions] = await Promise.all([
-            api.checkForUpdates(),
-            api.getHomePromotions(true).catch(() => null),
-          ]);
+          const status = await api.checkForUpdates();
           setUpdateStatus(status);
           if (status.promotions) {
             setReleasePromotions(toReleasePromotions(status.promotions));
-          } else if (promotions) {
-            setReleasePromotions(toReleasePromotions(promotions.promotions));
           }
+          void api
+            .getHomePromotions(true)
+            .then((promotions) => setReleasePromotions(toReleasePromotions(promotions.promotions)))
+            .catch(() => undefined);
           return toReleaseCheckResult(status);
         } finally {
           setReleaseChecking(false);
@@ -322,23 +383,50 @@ function AppRoot() {
       },
       installUpdate: async () => {
         setReleaseInstalling(true);
+        setUpdateProgress({ phase: "downloading", receivedBytes: 0, percent: 0 });
         try {
           const result = await getApi().installUpdate();
-          if (result.state !== "restarting") throw new Error(result.message);
+          if (result.state !== "restarting") {
+            const detail = updateMessageDetail(result.message);
+            if (detail) console.error("[studio] update installation failed", detail);
+            throw new Error(translateUpdateMessage(result.message, "install-failed"));
+          }
         } finally {
           setReleaseInstalling(false);
+          setUpdateProgress(null);
         }
       },
     }),
-    [releaseChecking, releaseInstalling, releasePromotions, updateStatus],
+    [
+      releaseChecking,
+      releaseInstalling,
+      releasePromotions,
+      translationEngine.resolvedLanguage,
+      updateProgress,
+      updateStatus,
+    ],
   );
   const hasReleaseUpdate = updateStatus?.state === "available" && Boolean(updateStatus.update);
 
   const renderShell = (body: ReactNode) => (
-    <div className="app-shell appearance-active relative flex h-full flex-col text-[#111]" style={shellStyle}>
+    <div
+      className="app-shell appearance-active relative flex h-full flex-col text-[#111]"
+      data-language={translationEngine.resolvedLanguage || translationEngine.language}
+      style={shellStyle}
+    >
       {previewAppearance ? <StudioBackground appearance={previewAppearance} /> : null}
       <div className="app-layout">
-        <AppWindowbar hasUpdate={hasReleaseUpdate} />
+        <AppWindowbar
+          hasUpdate={hasReleaseUpdate}
+          locale={config?.locale || "system"}
+          onLocaleChange={(locale) => {
+            if (!config) return;
+            const next: AppConfig = { ...config, locale };
+            setConfig(next);
+            void setI18nLocale(locale);
+            void getApi().saveConfig(next).then(setConfig).catch(() => undefined);
+          }}
+        />
         <div className="app-workspace">
           <AppSidebar view={view} onNavigate={navigate} />
           <div className={cn("app-main", view === "home" && "is-home")}>

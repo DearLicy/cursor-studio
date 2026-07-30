@@ -436,6 +436,7 @@ async function handle(
         enabled?: boolean;
         modelID?: string;
         openAIEndpoint?: ModelProvider["openAIEndpoint"];
+        costMultiplier?: number;
         reasoningEffort?: string;
         balance?: ModelProvider["balance"];
       }>(req);

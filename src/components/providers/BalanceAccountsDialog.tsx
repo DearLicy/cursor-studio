@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { SimpleSelect } from "@/components/ui/select";
 import { Field } from "@/components/ui/layout";
+import { RawText } from "@/lib/i18n-raw";
 import {
   Dialog,
   DialogBody,
@@ -124,10 +125,15 @@ export function BalanceAccountsDialog({
                     onClick={() => setEditing({ ...account })}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium">{account.name}</span>
-                      <Badge variant={account.enabled === false ? "default" : "solid"}>{account.type}</Badge>
+                      <span className="truncate text-sm font-medium" data-i18n-raw>{account.name}</span>
+                      <Badge variant={account.enabled === false ? "default" : "solid"}>
+                        <RawText>{account.type}</RawText>
+                      </Badge>
                     </div>
-                    <div className={`mt-1 truncate text-xs ${result?.ok ? "text-emerald-700" : "text-[#999]"}`}>
+                    <div
+                      className={`mt-1 truncate text-xs ${result?.ok ? "text-emerald-700" : "text-[#999]"}`}
+                      data-i18n-raw
+                    >
                       {result ? (result.ok ? result.balanceText : result.error) : account.baseURL}
                     </div>
                   </button>

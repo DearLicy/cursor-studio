@@ -41,6 +41,7 @@ import {
   type SkillRepo,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { RawText } from "@/lib/i18n-raw";
 
 const PAGE_SIZE = 9;
 
@@ -439,7 +440,7 @@ export function SkillsPage() {
         <section className="tools-workspace__error workspace-layer-enter workspace-layer-enter--delay-1" role="alert">
           <CircleAlert aria-hidden="true" />
           <strong>Skills 加载失败</strong>
-          <p>{loadError}</p>
+          <p data-i18n-raw>{loadError}</p>
           <Button type="button" variant="outline" size="sm" className="tools-workspace__text-action" onClick={() => void refresh()}>
             重试
           </Button>
@@ -510,14 +511,21 @@ export function SkillsPage() {
                           <div className="tools-workspace__identity">
                             <span className="tools-workspace__icon is-skill" aria-hidden="true"><Sparkles /></span>
                             <div className="tools-workspace__title-wrap">
-                              <strong className="tools-workspace__title" title={skill.name}>{skill.name}</strong>
+                              <strong className="tools-workspace__title" title={skill.name} data-i18n-raw>
+                                {skill.name}
+                              </strong>
                               <span className="tools-workspace__meta">{skillMeta(skill)}</span>
                             </div>
                           </div>
                           <span className={cn("tools-workspace__status", status.className)}>{status.label}</span>
                         </div>
 
-                        <p className="tools-workspace__preview">{skill.description?.trim() || "尚未填写说明。"}</p>
+                        <p
+                          className="tools-workspace__preview"
+                          data-i18n-raw={Boolean(skill.description?.trim()) || undefined}
+                        >
+                          {skill.description?.trim() || "尚未填写说明。"}
+                        </p>
                         {skill.hasSkillMd ? (
                           <div className="tools-workspace__current">
                             <CheckCircle2 aria-hidden="true" />
@@ -615,13 +623,20 @@ export function SkillsPage() {
                             <div className="tools-workspace__identity">
                               <span className="tools-workspace__icon is-skill" aria-hidden="true"><Download /></span>
                               <div className="tools-workspace__title-wrap">
-                                <strong className="tools-workspace__title" title={skill.name}>{skill.name}</strong>
-                                <span className="tools-workspace__meta">来自 {skill.repoName}</span>
+                                <strong className="tools-workspace__title" title={skill.name} data-i18n-raw>
+                                  {skill.name}
+                                </strong>
+                                <span className="tools-workspace__meta">来自 <RawText>{skill.repoName}</RawText></span>
                               </div>
                             </div>
                             <span className={cn("tools-workspace__status", status.className)}>{status.label}</span>
                           </div>
-                          <p className="tools-workspace__preview">{skill.description?.trim() || "尚未填写说明。"}</p>
+                          <p
+                            className="tools-workspace__preview"
+                            data-i18n-raw={Boolean(skill.description?.trim()) || undefined}
+                          >
+                            {skill.description?.trim() || "尚未填写说明。"}
+                          </p>
                           {skill.managed && !skill.updateAvailable ? (
                             <div className="tools-workspace__current"><CheckCircle2 aria-hidden="true" /> 当前已是最新内容</div>
                           ) : null}
@@ -675,7 +690,7 @@ export function SkillsPage() {
                     <article className="tools-workspace__repo-card" key={key} style={{ animationDelay: `${80 + Math.min(index, 4) * 40}ms` }}>
                       <span className="tools-workspace__icon is-repo" aria-hidden="true"><GitBranch /></span>
                       <div className="tools-workspace__repo-copy">
-                        <strong>{repositoryName(repo)}</strong>
+                        <strong data-i18n-raw>{repositoryName(repo)}</strong>
                         <span>{repo.enabled ? "用于查找可导入技能" : "暂不参与查找"}</span>
                       </div>
                       <div className="tools-workspace__repo-state">
@@ -815,11 +830,16 @@ export function SkillsPage() {
       <Dialog open={Boolean(preview)} onOpenChange={(open) => !open && setPreview(null)}>
         <DialogContent className="tools-workspace__dialog" size="lg">
           <DialogHeader>
-            <DialogTitle>{preview?.skill.name}</DialogTitle>
+            <DialogTitle><RawText>{preview?.skill.name || ""}</RawText></DialogTitle>
             <DialogDescription>{preview ? skillMeta(preview.skill) : ""}</DialogDescription>
           </DialogHeader>
           <DialogBody className="tools-workspace__dialog-body">
-            <pre className="tools-workspace__preview-content">{preview?.text || "暂无内容"}</pre>
+            <pre
+              className="tools-workspace__preview-content"
+              data-i18n-raw={Boolean(preview?.text) || undefined}
+            >
+              {preview?.text || "暂无内容"}
+            </pre>
           </DialogBody>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setPreview(null)}>关闭</Button>

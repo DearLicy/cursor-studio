@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import YAML from "yaml";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   DefaultCursorContextWindowTokens,
   InjectAccountEmail,
@@ -69,6 +69,8 @@ export interface ModelProvider {
    * Anthropic 忽略此字段。
    */
   openAIEndpoint?: OpenAIEndpoint;
+  /** Displayed usage cost multiplier. Does not change upstream billing. */
+  costMultiplier?: number;
   /** Smaller value = higher failover priority (stage 1). */
   failoverPriority?: number;
   /** Optional provider-local balance probing configuration. */
@@ -157,6 +159,8 @@ export interface AppConfig {
   /** Cursor Workspace Profiles (stage 2) */
   profiles?: WorkspaceProfile[];
   activeProfileId?: string;
+  /** Renderer language. System follows the current OS locale. */
+  locale?: "system" | "en" | "zh-CN";
 }
 
 export interface WorkspaceProfile {
@@ -320,12 +324,22 @@ export function normalizeContextWindowTokens(
   return Math.min(MAX_CURSOR_CONTEXT_WINDOW_TOKENS, Math.max(1, Math.floor(numeric)));
 }
 
+function repairLegacyQuestionMarkEncoding(value: unknown, fallback: string): string {
+  if (typeof value !== "string" || !value.trim()) return fallback;
+  const candidate = value.trim();
+  const lossyFallback = Array.from(fallback, (character) =>
+    character.codePointAt(0)! > 0x7f ? "?" : character,
+  ).join("");
+  return lossyFallback !== fallback && candidate === lossyFallback
+    ? fallback
+    : candidate;
+}
+
 export function normalizeCursorIntegration(value: unknown): CursorIntegrationConfig {
   const fallback = defaultCursorIntegration();
   const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const text = (key: string, fallbackValue: string) => {
-    const candidate = raw[key];
-    return typeof candidate === "string" && candidate.trim() ? candidate.trim() : fallbackValue;
+    return repairLegacyQuestionMarkEncoding(raw[key], fallbackValue);
   };
   return {
     displayName: text("displayName", fallback.displayName),
@@ -394,7 +408,19 @@ export function defaultConfig(): AppConfig {
     balanceAccounts: [],
     profiles: [],
     activeProfileId: undefined,
+    locale: "system",
   };
+}
+
+export function normalizeCostMultiplier(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return 1;
+  }
+  return value;
+}
+
+export function normalizeAppLocale(value: unknown): "system" | "en" | "zh-CN" {
+  return value === "en" || value === "zh-CN" ? value : "system";
 }
 
 export function studioHome(): string {
@@ -426,11 +452,6 @@ export async function ensureDirs(): Promise<void> {
   await fs.mkdir(logsDir(), { recursive: true });
 }
 
-export function channelId(p: Pick<ModelProvider, "baseURL" | "modelID" | "apiKey" | "displayName">): string {
-  const raw = [p.baseURL, p.modelID, p.apiKey, p.displayName].join("|");
-  return createHash("sha256").update(raw).digest("hex").slice(0, 16);
-}
-
 export async function loadConfig(): Promise<AppConfig> {
   await ensureDirs();
   const file = configPath();
@@ -451,6 +472,8 @@ export async function loadConfig(): Promise<AppConfig> {
   // string-shaped profile object, including a canonical file:// avatar URL.
   const cursorProfileMigrationRequired =
     !rawCursorIntegration ||
+    rawCursorIntegration.displayName !== cursorIntegration.displayName ||
+    rawCursorIntegration.planName !== cursorIntegration.planName ||
     rawCursorIntegration.avatarUrl !== cursorIntegration.avatarUrl ||
     rawCursorIntegration.profileHandle !== cursorIntegration.profileHandle ||
     rawCursorIntegration.website !== cursorIntegration.website ||
@@ -507,6 +530,7 @@ export async function loadConfig(): Promise<AppConfig> {
             ? p.modelSettings
             : {},
         openAIEndpoint: p.type === "openai" ? ep : undefined,
+        costMultiplier: normalizeCostMultiplier(p.costMultiplier),
         reasoningEffort: p.reasoningEffort || "high",
         balance: normalizeProviderBalance(p.balance),
       };
@@ -560,6 +584,7 @@ export async function loadConfig(): Promise<AppConfig> {
       typeof parsed?.activeProfileId === "string"
         ? parsed.activeProfileId
         : undefined,
+    locale: normalizeAppLocale(parsed?.locale),
   };
 
   if (
@@ -600,6 +625,7 @@ export async function saveConfig(cfg: AppConfig): Promise<AppConfig> {
         p.type === "openai"
           ? normalizeOpenAIEndpoint(p.openAIEndpoint, p.type)
           : undefined,
+      costMultiplier: normalizeCostMultiplier(p.costMultiplier),
       reasoningEffort: p.reasoningEffort || "high",
       balance: normalizeProviderBalance(p.balance),
     })),
@@ -614,6 +640,7 @@ export async function saveConfig(cfg: AppConfig): Promise<AppConfig> {
     })),
     profiles: Array.isArray(cfg.profiles) ? cfg.profiles : [],
     activeProfileId: cfg.activeProfileId,
+    locale: normalizeAppLocale(cfg.locale),
   };
   await fs.writeFile(configPath(), YAML.stringify(normalized), "utf8");
   return normalized;
@@ -652,6 +679,7 @@ export function newProvider(partial?: Partial<ModelProvider>): ModelProvider {
       type === "openai"
         ? normalizeOpenAIEndpoint(partial?.openAIEndpoint, type)
         : undefined,
+    costMultiplier: normalizeCostMultiplier(partial?.costMultiplier),
     failoverPriority: partial?.failoverPriority,
     balance: normalizeProviderBalance(partial?.balance),
   };

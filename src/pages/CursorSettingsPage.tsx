@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/ui/layout";
 import { cn } from "@/lib/utils";
+import { RawText } from "@/lib/i18n-raw";
 import { appIconUrl } from "@/lib/app-icon";
 import {
   appearanceMediaUrl,
@@ -293,7 +294,7 @@ export function CursorSettingsPage({
                 />
               </span>
               <div className="cursor-settings-workspace__avatar-copy">
-                <strong>{draft.displayName.trim() || DEFAULT_CURSOR_INTEGRATION.displayName}</strong>
+                <strong><RawText>{draft.displayName.trim() || DEFAULT_CURSOR_INTEGRATION.displayName}</RawText></strong>
                 <span>{usesDefaultAvatar ? "使用默认头像" : "头像已设置"}</span>
               </div>
               <div className="cursor-settings-workspace__avatar-actions">

@@ -36,7 +36,9 @@ const {
   queryUsage,
   exportUsageCsv,
   estimateCost,
+  getHomeMetricsSummary,
   resolvePriceSnapshot,
+  refreshUsagePricing,
   resetUsage,
 } = await import("../server/metrics/usage-store.ts");
 const { startControlPlane } = await import("../server/control-plane/index.ts");
@@ -166,6 +168,7 @@ cfg.providers = [
       modelID: "cheap-model",
       models: ["cheap-model", "default-model"],
       enabled: true,
+      costMultiplier: 2.5,
       modelSettings: {
         "*": {
           inputCostPerMillion: 1,
@@ -201,6 +204,7 @@ assert.equal(unit, 3);
 const snapModel = resolvePriceSnapshot(cfg.providers[0], "cheap-model");
 assert.equal(snapModel.source, "model");
 assert.equal(snapModel.inputPerMillion, 0.5);
+assert.equal(snapModel.multiplier, 2.5);
 const snapProv = resolvePriceSnapshot(cfg.providers[0], "unknown-model");
 assert.equal(snapProv.source, "provider");
 assert.equal(snapProv.inputPerMillion, 1);
@@ -231,16 +235,49 @@ assert.equal(all.summary.invalid >= 1, true);
 const priced = all.logs.find((l) => l.requestId === "rid-1");
 assert.ok(priced);
 assert.equal(priced.priceSnapshot?.source, "model");
-// cost = 0.5 + 1.5 = 2
-assert.ok(Math.abs(priced.costUsd - 2) < 1e-9, `cost=${priced.costUsd}`);
+// base cost = 0.5 + 1.5 = 2; provider multiplier = 2.5
+assert.equal(priced.priceSnapshot?.multiplier, 2.5);
+assert.ok(Math.abs(priced.costUsd - 5) < 1e-9, `cost=${priced.costUsd}`);
+
+// Pricing refresh recalculates retained history with the current multiplier.
+const multiplierCfg = await loadConfig();
+multiplierCfg.providers[0].costMultiplier = 0.5;
+await saveConfig(multiplierCfg);
+const multiplierHome = await getHomeMetricsSummary();
+assert.ok(
+  Math.abs(multiplierHome.estimatedCostUsd - 1) < 1e-9,
+  `home multiplier cost=${multiplierHome.estimatedCostUsd}`,
+);
+await refreshUsagePricing();
+const repriced = await queryUsage({ limit: 50 });
+const repricedLog = repriced.logs.find((l) => l.requestId === "rid-1");
+assert.equal(repricedLog.priceSnapshot?.multiplier, 0.5);
+assert.ok(Math.abs(repricedLog.costUsd - 1) < 1e-9, `repriced=${repricedLog.costUsd}`);
+
+// Deleting a provider must not reset retained history to the default multiplier.
+const deletedProviderCfg = await loadConfig();
+deletedProviderCfg.providers = [];
+await saveConfig(deletedProviderCfg);
+await refreshUsagePricing();
+const retained = await queryUsage({ limit: 50 });
+const retainedLog = retained.logs.find((l) => l.requestId === "rid-1");
+assert.equal(retainedLog.priceSnapshot?.multiplier, 0.5);
+assert.equal(retainedLog.priceSnapshot?.source, "model");
+assert.ok(Math.abs(retainedLog.costUsd - 1) < 1e-9, `retained=${retainedLog.costUsd}`);
 
 const onlyAgent = await queryUsage({ source: "agent", valid: "valid" });
 assert.ok(onlyAgent.logs.every((l) => l.valid && (l.source || "unknown") === "agent"));
 
 const csv = await exportUsageCsv({ valid: "valid" });
 assert.ok(csv.includes("price_source"));
+assert.ok(csv.includes("price_multiplier"));
 assert.ok(csv.includes("cheap-model"));
 assert.ok(csv.includes("model"));
+const csvLines = csv.split("\n");
+const multiplierIndex = csvLines[0].split(",").indexOf("price_multiplier");
+const pricedCsvRow = csvLines.find((line) => line.includes("rid-1"));
+assert.ok(multiplierIndex >= 0);
+assert.equal(pricedCsvRow?.split(",")[multiplierIndex], "0.5");
 
 // HTTP endpoints
 const server = startControlPlane();

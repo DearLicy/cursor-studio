@@ -14,6 +14,7 @@ import {
   recordProviderFailure,
   recordProviderSuccess,
 } from "../../providers/provider-health";
+import { joinProviderEndpoint as joinBase } from "../../providers/base-url";
 import {
   createRequestContext,
   markError,
@@ -333,27 +334,6 @@ export function mergeManagedSystemPrompt(
       : {}),
   };
   return messages;
-}
-
-function joinBase(baseURL: string, path: string): string {
-  const b = baseURL.replace(/\/+$/, "");
-  if (b.endsWith("/v1") && path.startsWith("/v1/")) {
-    return b.slice(0, -3) + path;
-  }
-  // base 已是 .../responses 或 .../chat/completions 时直接用 base
-  if (
-    path.includes("responses") &&
-    /\/responses$/i.test(b)
-  ) {
-    return b;
-  }
-  if (
-    path.includes("chat/completions") &&
-    /\/chat\/completions$/i.test(b)
-  ) {
-    return b;
-  }
-  return b + path;
 }
 
 /** 从 Cursor model 引用解析：providerId:modelId 或 providerId:modelId:high */

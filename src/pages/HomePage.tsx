@@ -36,6 +36,8 @@ import {
   type ServiceState,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useCountUpProgress } from "@/lib/use-count-up-progress";
+import { currentIntlLocale } from "@/lib/i18n";
 import {
   APP_RELEASE,
   isReleasePromotionActive,
@@ -45,6 +47,8 @@ import {
   type ReleaseUpdate,
 } from "@/lib/release";
 import { useConfirm } from "@/components/ui/confirm";
+import supportWechatQr from "../../assets/support-wechat.png";
+import supportAlipayQr from "../../assets/support-alipay.png";
 
 type HomeDestination =
   | "providers"
@@ -56,7 +60,7 @@ type HomeDestination =
 
 function formatCompact(value?: number | null): string {
   const number = Math.max(0, Number(value) || 0);
-  if (number < 1_000) return Math.round(number).toLocaleString("zh-CN");
+  if (number < 1_000) return Math.round(number).toLocaleString(currentIntlLocale());
   if (number < 1_000_000) {
     return `${(number / 1_000).toFixed(number >= 100_000 ? 0 : 1).replace(/\.0$/, "")}K`;
   }
@@ -79,7 +83,7 @@ function formatUpdatedAt(value?: string): string {
   if (elapsed >= 0 && elapsed < 60 * 60_000) {
     return `${Math.max(1, Math.floor(elapsed / 60_000))} 分钟前`;
   }
-  return date.toLocaleTimeString("zh-CN", {
+  return date.toLocaleTimeString(currentIntlLocale(), {
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -109,10 +113,7 @@ export function HomePage({
   const [pendingUpdate, setPendingUpdate] = useState<ReleaseUpdate | null>(null);
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
-  const [cacheMotionProgress, setCacheMotionProgress] = useState(0);
-  const [cacheMotionSettled, setCacheMotionSettled] = useState(false);
   const metricsLoadedRef = useRef(false);
-  const cacheMotionStartedRef = useRef(false);
   const promptedReleaseVersionRef = useRef<string | null>(null);
 
   const refreshService = async () => {
@@ -208,6 +209,7 @@ export function HomePage({
   }, []);
 
   const availableUpdate = releaseControl?.state?.availableUpdate ?? null;
+  const updateProgress = releaseControl?.state?.progress ?? null;
   const availableUpdateVersion = availableUpdate?.version ?? null;
 
   useEffect(() => {
@@ -215,39 +217,6 @@ export function HomePage({
     promptedReleaseVersionRef.current = availableUpdate.version;
     setPendingUpdate(availableUpdate);
   }, [availableUpdate, availableUpdateVersion]);
-
-  useEffect(() => {
-    if (metricsLoading || !metrics || cacheMotionStartedRef.current) return;
-
-    let prepareFrame: number | null = null;
-    let animationFrame: number | null = null;
-    const duration = 720;
-
-    prepareFrame = window.requestAnimationFrame(() => {
-      const startedAt = performance.now();
-      const animate = (now: number) => {
-        const elapsed = Math.min(1, (now - startedAt) / duration);
-        const eased = 1 - Math.pow(1 - elapsed, 3);
-        setCacheMotionProgress(eased);
-
-        if (elapsed < 1) {
-          animationFrame = window.requestAnimationFrame(animate);
-          return;
-        }
-
-        cacheMotionStartedRef.current = true;
-        setCacheMotionProgress(1);
-        setCacheMotionSettled(true);
-      };
-
-      animationFrame = window.requestAnimationFrame(animate);
-    });
-
-    return () => {
-      if (prepareFrame !== null) window.cancelAnimationFrame(prepareFrame);
-      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-    };
-  }, [metrics, metricsLoading]);
 
   const toggleService = async () => {
     if (serviceLoading || busy) return;
@@ -290,7 +259,10 @@ export function HomePage({
   const enabledProviders = providers.filter((provider) => provider.enabled).length;
   const turns = Number(metrics?.turnsTotal || 0);
   const validTurns = Number(metrics?.validTurnsTotal || 0);
-  const successRate = turns > 0 ? `${Math.round((validTurns / turns) * 100)}%` : "—";
+  const countUpProgress = useCountUpProgress(Boolean(metrics) && !metricsLoading);
+  const successRate = turns > 0
+    ? `${Math.round((validTurns / turns) * 100 * countUpProgress)}%`
+    : "—";
   const cacheReadTokens = Math.max(0, Number(metrics?.cacheReadTokens || 0));
   const cacheWriteTokens = Math.max(0, Number(metrics?.cacheWriteTokens || 0));
   const promptTokens = Math.max(0, Number(metrics?.promptTokensTotal || 0));
@@ -308,11 +280,11 @@ export function HomePage({
   const cacheReadProgress = cacheCompositionTotal > 0 ? (cacheReadTokens / cacheCompositionTotal) * 100 : 0;
   const directInputProgress = cacheCompositionTotal > 0 ? (uncachedPromptTokens / cacheCompositionTotal) * 100 : 0;
   const cacheWriteProgress = cacheCompositionTotal > 0 ? (cacheWriteTokens / cacheCompositionTotal) * 100 : 0;
-  const displayedCacheHitPercent = cacheHitPercent * cacheMotionProgress;
+  const displayedCacheHitPercent = cacheHitPercent * countUpProgress;
   const displayedCacheHitLabel = hasCacheData ? `${displayedCacheHitPercent.toFixed(1)}%` : "—";
-  const displayedCacheReadProgress = cacheReadProgress * cacheMotionProgress;
-  const displayedDirectInputProgress = directInputProgress * cacheMotionProgress;
-  const displayedCacheWriteProgress = cacheWriteProgress * cacheMotionProgress;
+  const displayedCacheReadProgress = cacheReadProgress * countUpProgress;
+  const displayedDirectInputProgress = directInputProgress * countUpProgress;
+  const displayedCacheWriteProgress = cacheWriteProgress * countUpProgress;
   const isInitialMetricsLoad = metricsLoading && metrics === null;
   const isInitialLoadError = Boolean(homeLoadError && metrics === null && !metricsLoading);
 
@@ -324,6 +296,7 @@ export function HomePage({
         <HomeUpdateDialog
           update={pendingUpdate}
           installing={updateInstalling}
+          progress={updateProgress}
           onOpenChange={(open) => !open && !updateInstalling && setPendingUpdate(null)}
           onInstall={() => void installUpdate()}
         />
@@ -348,6 +321,7 @@ export function HomePage({
         <HomeUpdateDialog
           update={pendingUpdate}
           installing={updateInstalling}
+          progress={updateProgress}
           onOpenChange={(open) => !open && !updateInstalling && setPendingUpdate(null)}
           onInstall={() => void installUpdate()}
         />
@@ -363,6 +337,7 @@ export function HomePage({
       <HomeUpdateDialog
         update={pendingUpdate}
         installing={updateInstalling}
+        progress={updateProgress}
         onOpenChange={(open) => !open && !updateInstalling && setPendingUpdate(null)}
         onInstall={() => void installUpdate()}
       />
@@ -387,7 +362,7 @@ export function HomePage({
                 <circle className="home-cache-ring-track" cx="56" cy="56" r="43" pathLength={cacheRingLength} />
                 {hasCacheData ? (
                   <circle
-                    className={cn("home-cache-ring-value", cacheMotionSettled && "is-settled")}
+                    className="home-cache-ring-value"
                     cx="56"
                     cy="56"
                     r="43"
@@ -406,37 +381,28 @@ export function HomePage({
               <div className="is-cache-read">
                 <div className="home-cache-breakdown-line">
                   <dt>缓存读取</dt>
-                  <dd>{formatCompact(cacheReadTokens)}</dd>
+                  <dd>{formatCompact(cacheReadTokens * countUpProgress)}</dd>
                 </div>
                 <span className="home-cache-progress" aria-hidden="true">
-                  <span
-                    className={cn(cacheMotionSettled && "is-settled")}
-                    style={{ width: `${displayedCacheReadProgress}%` }}
-                  />
+                  <span style={{ width: `${displayedCacheReadProgress}%` }} />
                 </span>
               </div>
               <div className="is-direct-input">
                 <div className="home-cache-breakdown-line">
                   <dt>直接输入</dt>
-                  <dd>{formatCompact(uncachedPromptTokens)}</dd>
+                  <dd>{formatCompact(uncachedPromptTokens * countUpProgress)}</dd>
                 </div>
                 <span className="home-cache-progress" aria-hidden="true">
-                  <span
-                    className={cn(cacheMotionSettled && "is-settled")}
-                    style={{ width: `${displayedDirectInputProgress}%` }}
-                  />
+                  <span style={{ width: `${displayedDirectInputProgress}%` }} />
                 </span>
               </div>
               <div className="is-cache-write">
                 <div className="home-cache-breakdown-line">
                   <dt>缓存写入</dt>
-                  <dd>{formatCompact(cacheWriteTokens)}</dd>
+                  <dd>{formatCompact(cacheWriteTokens * countUpProgress)}</dd>
                 </div>
                 <span className="home-cache-progress" aria-hidden="true">
-                  <span
-                    className={cn(cacheMotionSettled && "is-settled")}
-                    style={{ width: `${displayedCacheWriteProgress}%` }}
-                  />
+                  <span style={{ width: `${displayedCacheWriteProgress}%` }} />
                 </span>
               </div>
             </dl>
@@ -495,8 +461,8 @@ export function HomePage({
           </div>
           <div className="home-health-metric">
             <span>累计对话</span>
-            <strong>{formatCompact(turns)}</strong>
-            <small>{validTurns > 0 ? `${formatCompact(validTurns)} 次成功` : "暂无记录"}</small>
+            <strong>{formatCompact(turns * countUpProgress)}</strong>
+            <small>{validTurns > 0 ? `${formatCompact(validTurns * countUpProgress)} 次成功` : "暂无记录"}</small>
           </div>
           <div className="home-health-metric">
             <span>成功率</span>
@@ -519,7 +485,7 @@ export function HomePage({
           </span>
           <span className="home-compact-copy">
             <small>模型供应商</small>
-            <strong>{enabledProviders} 个已启用</strong>
+            <strong>{Math.round(enabledProviders * countUpProgress)} 个已启用</strong>
           </span>
           <ChevronRight />
         </button>
@@ -533,7 +499,7 @@ export function HomePage({
           </span>
           <span className="home-compact-copy">
             <small>本次请求</small>
-            <strong>{formatCompact(forwarded)} 次</strong>
+            <strong>{formatCompact(forwarded * countUpProgress)} 次</strong>
           </span>
           <ChevronRight />
         </button>
@@ -559,11 +525,11 @@ export function HomePage({
         <div className="home-summary-rows">
           <div>
             <span>Token 用量</span>
-            <strong>{formatCompact(metrics?.requestTokensTotal)}</strong>
+            <strong>{formatCompact(Number(metrics?.requestTokensTotal || 0) * countUpProgress)}</strong>
           </div>
           <div>
             <span>费用估算</span>
-            <strong>{formatCost(metrics?.estimatedCostUsd)}</strong>
+            <strong>{formatCost(Number(metrics?.estimatedCostUsd || 0) * countUpProgress)}</strong>
           </div>
           <div>
             <span>最近更新</span>
@@ -749,11 +715,13 @@ function HomeSupportPanel({
 function HomeUpdateDialog({
   update,
   installing,
+  progress,
   onOpenChange,
   onInstall,
 }: {
   update: ReleaseUpdate | null;
   installing: boolean;
+  progress?: { phase: "downloading" | "verifying"; percent?: number } | null;
   onOpenChange: (open: boolean) => void;
   onInstall: () => void;
 }) {
@@ -768,10 +736,13 @@ function HomeUpdateDialog({
             <span>新版本</span>
             <strong>{update?.version}</strong>
           </div>
-          <p className="home-update-dialog__summary">
+          <p
+            className="home-update-dialog__summary"
+            data-i18n-raw={Boolean(update?.title) || undefined}
+          >
             {update?.title || "Cursor Studio 已准备好新的功能与体验优化。"}
           </p>
-          {update?.notes ? <p className="home-update-dialog__notes">{update.notes}</p> : null}
+          {update?.notes ? <p className="home-update-dialog__notes" data-i18n-raw>{update.notes}</p> : null}
         </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={installing}>
@@ -779,7 +750,11 @@ function HomeUpdateDialog({
           </Button>
           <Button onClick={onInstall} disabled={installing}>
             <RefreshCw className={cn("h-3.5 w-3.5", installing && "workspace-refresh-icon is-spinning")} />
-            {installing ? "正在更新" : "立即更新"}
+            {installing
+              ? progress?.phase === "verifying"
+                ? "正在校验"
+                : `正在下载${progress?.percent != null ? ` ${progress.percent}%` : ""}`
+              : "立即更新"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -802,11 +777,11 @@ function HomeSupportDialog({
         </DialogHeader>
         <DialogBody className="home-support-dialog__body">
           <figure className="home-support-qr">
-            <img src="/support-wechat-qr.png" alt="微信二维码" />
+            <img src={supportWechatQr} alt="微信二维码" />
             <figcaption>微信</figcaption>
           </figure>
           <figure className="home-support-qr">
-            <img src="/support-alipay-qr.png" alt="支付宝二维码" />
+            <img src={supportAlipayQr} alt="支付宝二维码" />
             <figcaption>支付宝</figcaption>
           </figure>
         </DialogBody>

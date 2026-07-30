@@ -22,6 +22,7 @@ export type FetchAndSaveInput = {
   enabled?: boolean;
   modelID?: string;
   openAIEndpoint?: ModelProvider["openAIEndpoint"];
+  costMultiplier?: number;
   reasoningEffort?: string;
   /** Present even when undefined when the caller wants to clear balance probing. */
   balance?: ModelProvider["balance"];
@@ -77,6 +78,8 @@ export async function fetchAndSaveProviderModels(
             cfg.providers[existingIdx].openAIEndpoint ||
             "/v1/chat/completions"
           : undefined,
+      costMultiplier:
+        input.costMultiplier ?? cfg.providers[existingIdx].costMultiplier,
       reasoningEffort:
         input.reasoningEffort ||
         cfg.providers[existingIdx].reasoningEffort ||
@@ -94,6 +97,7 @@ export async function fetchAndSaveProviderModels(
       models: ids,
       modelID: keepDefault,
       openAIEndpoint: input.openAIEndpoint,
+      costMultiplier: input.costMultiplier,
       reasoningEffort: input.reasoningEffort || "high",
       balance: input.balance,
     });

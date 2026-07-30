@@ -28,6 +28,16 @@ type ProbeHistoryFile = {
 };
 
 const MAX_ITEMS = 200;
+let mutationQueue: Promise<void> = Promise.resolve();
+
+function mutateHistory<T>(operation: () => Promise<T>): Promise<T> {
+  const result = mutationQueue.then(operation, operation);
+  mutationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
 
 function historyPath(): string {
   const home =
@@ -59,30 +69,33 @@ async function writeFile(file: ProbeHistoryFile): Promise<void> {
 export async function appendProbeHistory(
   item: Omit<ProbeHistoryItem, "id" | "at"> & { at?: string },
 ): Promise<ProbeHistoryItem> {
-  const file = await readFile();
-  const next: ProbeHistoryItem = {
-    id: randomUUID(),
-    at: item.at || new Date().toISOString(),
-    providerId: item.providerId,
-    displayName: item.displayName,
-    ok: item.ok,
-    latencyMs: item.latencyMs,
-    status: item.status,
-    endpoint: item.endpoint,
-    modelCount: item.modelCount,
-    error: item.error,
-    batchId: item.batchId,
-  };
-  file.items.unshift(next);
-  if (file.items.length > MAX_ITEMS) file.items = file.items.slice(0, MAX_ITEMS);
-  await writeFile(file);
-  return next;
+  return mutateHistory(async () => {
+    const file = await readFile();
+    const next: ProbeHistoryItem = {
+      id: randomUUID(),
+      at: item.at || new Date().toISOString(),
+      providerId: item.providerId,
+      displayName: item.displayName,
+      ok: item.ok,
+      latencyMs: item.latencyMs,
+      status: item.status,
+      endpoint: item.endpoint,
+      modelCount: item.modelCount,
+      error: item.error,
+      batchId: item.batchId,
+    };
+    file.items.unshift(next);
+    if (file.items.length > MAX_ITEMS) file.items = file.items.slice(0, MAX_ITEMS);
+    await writeFile(file);
+    return next;
+  });
 }
 
 export async function listProbeHistory(opts?: {
   limit?: number;
   providerId?: string;
 }): Promise<ProbeHistoryItem[]> {
+  await mutationQueue;
   const file = await readFile();
   let items = file.items;
   if (opts?.providerId) {
@@ -93,5 +106,5 @@ export async function listProbeHistory(opts?: {
 }
 
 export async function clearProbeHistory(): Promise<void> {
-  await writeFile({ version: 1, items: [] });
+  await mutateHistory(() => writeFile({ version: 1, items: [] }));
 }

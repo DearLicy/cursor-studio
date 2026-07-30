@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import i18n, { tr } from "./lib/i18n";
 import "./styles/tokens.css";
 import "./styles/index.css";
 import "./styles/app-pro.css";
@@ -16,6 +17,12 @@ import "./styles/config-workspace.css";
 import "./styles/cursor-settings-workspace.css";
 import "./styles/appearance-workspace.css";
 import "./styles/motion.css";
+
+function isChineseLocale(): boolean {
+  return /^zh(?:-|$)/i.test(i18n.resolvedLanguage || i18n.language || "");
+}
+
+document.documentElement.lang = isChineseLocale() ? "zh-CN" : "en";
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -47,7 +54,7 @@ class ErrorBoundary extends React.Component<
           }}
         >
           <div style={{ maxWidth: 420, textAlign: "center" }}>
-            <h1 style={{ fontSize: 16, marginBottom: 8 }}>界面渲染失败</h1>
+            <h1 style={{ fontSize: 16, marginBottom: 8 }}>{tr("界面渲染失败")}</h1>
             <p style={{ fontSize: 13, color: "#666", wordBreak: "break-all" }}>
               {this.state.error}
             </p>
@@ -61,7 +68,12 @@ class ErrorBoundary extends React.Component<
 
 const rootEl = document.getElementById("root");
 if (!rootEl) {
-  document.body.innerHTML = '<p style="padding:24px">#root 不存在</p>';
+  const fallback = document.createElement("p");
+  fallback.style.padding = "24px";
+  fallback.textContent = isChineseLocale()
+    ? "缺少 #root 挂载节点"
+    : "The #root mount node is missing";
+  document.body.replaceChildren(fallback);
 } else {
   ReactDOM.createRoot(rootEl).render(
     <React.StrictMode>

@@ -21,6 +21,7 @@ import {
   formatTokenCount,
   getTodayTokenUsage,
 } from "../server/metrics/usage-store";
+import { getNativeStrings } from "../server/runtime/native-locale";
 
 let tray: Tray | null = null;
 let isQuitting = false;
@@ -115,6 +116,7 @@ export function toggleMainWindow(win: BrowserWindow | null) {
 async function buildContextMenu(
   getWin: () => BrowserWindow | null,
 ): Promise<Menu> {
+  const strings = await getNativeStrings(app.getLocale());
   let running = false;
   let todayTokens = 0;
   try {
@@ -130,9 +132,8 @@ async function buildContextMenu(
     todayTokens = 0;
   }
 
-  // 用户文案：启动中 / 未启动
-  const statusLabel = running ? "启动中" : "未启动";
-  const usageLabel = `今日用量：${formatTokenCount(todayTokens)} token`;
+  const statusLabel = running ? strings.tray.running : strings.tray.notRunning;
+  const usageLabel = strings.tray.todayUsage(formatTokenCount(todayTokens));
 
   const template: MenuItemConstructorOptions[] = [
     {
@@ -141,7 +142,7 @@ async function buildContextMenu(
     },
     { type: "separator" },
     {
-      label: "启动服务",
+      label: strings.tray.startService,
       enabled: !running,
       click: () => {
         void (async () => {
@@ -155,7 +156,7 @@ async function buildContextMenu(
       },
     },
     {
-      label: "停止服务",
+      label: strings.tray.stopService,
       enabled: running,
       click: () => {
         void (async () => {
@@ -174,16 +175,16 @@ async function buildContextMenu(
     },
     { type: "separator" },
     {
-      label: "显示窗口",
+      label: strings.tray.showWindow,
       click: () => showMainWindow(getWin()),
     },
     {
-      label: "隐藏窗口",
+      label: strings.tray.hideWindow,
       click: () => hideToTray(getWin()),
     },
     { type: "separator" },
     {
-      label: "退出",
+      label: strings.tray.quit,
       click: () => {
         isQuitting = true;
         // Close the hidden BrowserWindow before starting cleanup. This avoids a
@@ -220,12 +221,14 @@ export async function refreshTrayMenu(getWin?: () => BrowserWindow | null) {
   menuRefreshing = true;
   try {
     // 不 setContextMenu 常驻，避免与 right-click 双弹；仅更新 tooltip
-    const st = await getServiceState().catch(() => ({ running: false as boolean }));
-    const today = await getTodayTokenUsage().catch(() => ({ tokens: 0 }));
+    const [strings, st, today] = await Promise.all([
+      getNativeStrings(app.getLocale()),
+      getServiceState().catch(() => ({ running: false as boolean })),
+      getTodayTokenUsage().catch(() => ({ tokens: 0 })),
+    ]);
     const running = Boolean(st.running);
-    tray.setToolTip(
-      `Cursor Studio · ${running ? "启动中" : "未启动"} · 今日 ${formatTokenCount(today.tokens)} token`,
-    );
+    const status = running ? strings.tray.running : strings.tray.notRunning;
+    tray.setToolTip(strings.tray.tooltip(status, formatTokenCount(today.tokens)));
   } finally {
     menuRefreshing = false;
   }

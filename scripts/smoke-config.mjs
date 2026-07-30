@@ -16,17 +16,49 @@ try {
   assert.equal(initial.cursorIntegration.avatarUrl, "");
   assert.equal(initial.cursorIntegration.profileHandle, "");
   assert.equal(initial.cursorIntegration.website, "https://www.akucb.com");
+  assert.equal(
+    store.normalizeCursorIntegration({ displayName: "???", planName: "??Pro" }).displayName,
+    "李初一",
+  );
+  assert.equal(
+    store.normalizeCursorIntegration({ displayName: "???", planName: "??Pro" }).planName,
+    "豆包Pro",
+  );
+  assert.equal(
+    store.normalizeCursorIntegration({ displayName: "Custom ???", planName: "Team ??Pro" })
+      .displayName,
+    "Custom ???",
+  );
   const firstProviderDraft = store.newProvider();
   const secondProviderDraft = store.newProvider();
+  assert.equal(firstProviderDraft.costMultiplier, 1);
+  assert.equal(store.normalizeCostMultiplier(undefined), 1);
+  assert.equal(store.normalizeCostMultiplier("0.5"), 1);
+  assert.equal(store.normalizeCostMultiplier(Number.NaN), 1);
+  assert.equal(store.normalizeCostMultiplier(-0.5), 1);
+  assert.equal(store.normalizeCostMultiplier(0), 0);
+  assert.equal(store.normalizeCostMultiplier(0.25), 0.25);
+  assert.equal(store.normalizeCostMultiplier(Number.MAX_VALUE), Number.MAX_VALUE);
   assert.notEqual(firstProviderDraft.id, secondProviderDraft.id);
   const normalizedDrafts = await store.saveConfig({
     ...initial,
     providers: [
-      { ...firstProviderDraft, id: "" },
-      { ...secondProviderDraft, id: "" },
+      { ...firstProviderDraft, id: "", costMultiplier: undefined },
+      { ...secondProviderDraft, id: "", costMultiplier: 0 },
+      { ...store.newProvider(), id: "", costMultiplier: 0.25 },
+      { ...store.newProvider(), id: "", costMultiplier: 1_000_000 },
     ],
   });
   assert.notEqual(normalizedDrafts.providers[0]?.id, normalizedDrafts.providers[1]?.id);
+  assert.equal(normalizedDrafts.providers[0]?.costMultiplier, 1);
+  assert.equal(normalizedDrafts.providers[1]?.costMultiplier, 0);
+  assert.equal(normalizedDrafts.providers[2]?.costMultiplier, 0.25);
+  assert.equal(normalizedDrafts.providers[3]?.costMultiplier, 1_000_000);
+  const reloadedDrafts = await store.loadConfig();
+  assert.equal(reloadedDrafts.providers[0]?.costMultiplier, 1);
+  assert.equal(reloadedDrafts.providers[1]?.costMultiplier, 0);
+  assert.equal(reloadedDrafts.providers[2]?.costMultiplier, 0.25);
+  assert.equal(reloadedDrafts.providers[3]?.costMultiplier, 1_000_000);
   initial.providers = [
     store.newProvider({
       displayName: "Fixture",
@@ -138,7 +170,14 @@ try {
       "  organization: Legacy Team",
       "  teamId: 42",
       "  website: ''",
-      "providers: []",
+      "providers:",
+      "  - id: legacy-provider",
+      "    displayName: Legacy Provider",
+      "    type: openai",
+      "    baseURL: https://legacy.example/v1",
+      "    apiKey: legacy-key",
+      "    modelID: legacy-model",
+      "    enabled: true",
     ].join("\n"),
     "utf8",
   );
@@ -147,6 +186,7 @@ try {
   assert.equal(migrated.cursorIntegration.avatarUrl, "");
   assert.equal(migrated.cursorIntegration.profileHandle, "");
   assert.equal(migrated.cursorIntegration.website, "https://www.akucb.com");
+  assert.equal(migrated.providers[0]?.costMultiplier, 1);
   assert.equal(Object.hasOwn(migrated.cursorIntegration, "organization"), false);
   assert.equal(Object.hasOwn(migrated.cursorIntegration, "teamId"), false);
   const migratedText = await fs.readFile(store.configPath(), "utf8");
@@ -154,6 +194,31 @@ try {
   assert.doesNotMatch(migratedText, /organization:/);
   assert.doesNotMatch(migratedText, /teamId:/);
   assert.match(migratedText, /website: https:\/\/www\.akucb\.com/);
+  assert.match(migratedText, /costMultiplier: 1/);
+
+  // A Windows code-page write in older builds replaced each default CJK
+  // character with '?'. Loading repairs only those exact lossy defaults and
+  // persists valid UTF-8 values for subsequent starts.
+  await fs.writeFile(
+    store.configPath(),
+    [
+      "version: 1",
+      "cursorIntegration:",
+      "  displayName: ???",
+      "  contactEmail: 82719519@qq.com",
+      "  planName: ??Pro",
+      "  defaultContextWindowTokens: 200000",
+      "providers: []",
+    ].join("\n"),
+    "utf8",
+  );
+  const repaired = await store.loadConfig();
+  assert.equal(repaired.cursorIntegration.displayName, "李初一");
+  assert.equal(repaired.cursorIntegration.planName, "豆包Pro");
+  const repairedText = await fs.readFile(store.configPath(), "utf8");
+  assert.match(repairedText, /displayName: 李初一/);
+  assert.match(repairedText, /planName: 豆包Pro/);
+  assert.doesNotMatch(repairedText, /displayName: \?\?\?/);
 
   console.log("Config smoke passed: import merge, profile migration, three-backup retention, cleanup, and context window precedence");
 } finally {

@@ -4,6 +4,8 @@
  * - Anthropic 兼容：GET {base}/v1/models
  */
 
+import { providerEndpointCandidates } from "./base-url";
+
 export type ProviderType = "openai" | "anthropic";
 
 export interface FetchModelsInput {
@@ -32,31 +34,11 @@ export interface ProviderProbeResult {
   error?: string;
 }
 
-function trimSlash(url: string): string {
-  return url.replace(/\/+$/, "");
-}
-
-/** base 是否已带 /v1 或 /vN 路径段 */
-function hasVersionSuffix(base: string): boolean {
-  return /\/v\d+$/i.test(base);
-}
-
 function candidateUrls(type: ProviderType, baseURL: string): string[] {
-  const base = trimSlash(baseURL.trim());
-  if (!base) return [];
-
-  if (type === "anthropic") {
-    // Anthropic 官方：https://api.anthropic.com/v1/models
-    if (base.endsWith("/models")) return [base];
-    if (hasVersionSuffix(base)) return [`${base}/models`];
-    return [`${base}/v1/models`, `${base}/models`];
-  }
-
-  // OpenAI 兼容：常见 base 为 .../v1
-  if (base.endsWith("/models")) return [base];
-  if (hasVersionSuffix(base)) return [`${base}/models`];
-  // 有的中转站 base 不带 /v1
-  return [`${base}/v1/models`, `${base}/models`];
+  // Both supported protocols expose model discovery at the same versioned
+  // path. The shared helper also keeps the unversioned compatibility fallback.
+  void type;
+  return providerEndpointCandidates(baseURL, "/models");
 }
 
 function authHeaders(type: ProviderType, apiKey: string): Record<string, string> {

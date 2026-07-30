@@ -675,6 +675,38 @@
     animation: workspace-motion-dialog-out var(--workspace-motion-exit) ease-in both !important;
   }
 
+  /* Sonner disables every toast transition for reduced-motion hosts. This app
+   * deliberately keeps its restrained compositor motion in that mode, so
+   * restore the properties that drive mounting, removal and stack reflow. */
+  .app-notice-toaster[data-sonner-toaster] {
+    transition: transform var(--workspace-motion-enter) var(--workspace-motion-ease) !important;
+  }
+
+  .app-notice-toaster[data-sonner-toaster] [data-sonner-toast] {
+    transition:
+      transform var(--workspace-motion-enter) var(--workspace-motion-ease),
+      opacity var(--workspace-motion-exit) ease,
+      height var(--workspace-motion-enter) var(--workspace-motion-ease),
+      box-shadow var(--workspace-motion-interaction) var(--workspace-motion-ease) !important;
+  }
+
+  .app-notice-toaster[data-sonner-toaster] [data-sonner-toast] > * {
+    transition: opacity var(--workspace-motion-interaction) var(--workspace-motion-ease) !important;
+  }
+
+  .app-notice-toaster[data-sonner-toaster]
+    [data-sonner-toast][data-removed="true"][data-swipe-out="false"] {
+    transition:
+      transform var(--workspace-motion-exit) ease-in,
+      opacity var(--workspace-motion-exit) ease-in,
+      height var(--workspace-motion-exit) ease-in,
+      box-shadow var(--workspace-motion-interaction) var(--workspace-motion-ease) !important;
+  }
+
+  .app-notice-toaster[data-sonner-toaster] [data-sonner-toast][data-swiping="true"] {
+    transition: none !important;
+  }
+
   .home-product-home .home-skeleton::after,
   :is(
     .usage-dashboard__skeleton,

@@ -40,6 +40,8 @@ const integration = normalizeCursorIntegration({
   website: "example.test/profile",
 });
 assert.equal(normalizeCursorIntegration({ contactEmail: "" }).contactEmail, "");
+assert.equal(normalizeCursorIntegration({ displayName: "???" }).displayName, "李初一");
+assert.equal(normalizeCursorIntegration({ planName: "??Pro" }).planName, "豆包Pro");
 assert.equal(integration.avatarUrl, pathToFileURL(avatarPath).href);
 assert.equal(integration.profileHandle, "example_studio");
 assert.equal(integration.website, "https://example.test/profile");

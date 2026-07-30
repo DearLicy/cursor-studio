@@ -177,9 +177,9 @@
 
 .provider-directory__row {
   display: grid;
-  grid-template-columns: minmax(280px, 1.3fr) minmax(170px, 0.72fr) minmax(170px, 0.68fr) auto;
+  grid-template-columns: minmax(230px, 1.2fr) minmax(130px, 0.55fr) minmax(160px, 0.7fr) minmax(125px, 0.52fr) auto;
   align-items: center;
-  gap: 20px;
+  gap: 16px;
   min-width: 0;
   min-height: 104px;
   padding: 18px 20px;
@@ -227,6 +227,7 @@
 
 .provider-directory__identity > div,
 .provider-directory__model,
+.provider-directory__balance,
 .provider-directory__health {
   min-width: 0;
 }
@@ -260,6 +261,79 @@
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.provider-directory__balance {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+
+.provider-directory__balance-icon {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  color: #8798a3;
+  background: #f0f5f7;
+}
+
+.provider-directory__balance-icon svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.9;
+}
+
+.provider-directory__balance-copy {
+  min-width: 0;
+}
+
+.provider-directory__balance-copy strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-directory__balance-copy strong {
+  color: #65757f;
+  font-size: 13px;
+  font-weight: 720;
+  line-height: 1.25;
+}
+
+.provider-directory__balance-multiplier {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  color: #95a3ae;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-directory__balance.is-ready .provider-directory__balance-icon {
+  color: #15836a;
+  background: #e7f8f1;
+}
+
+.provider-directory__balance.is-ready .provider-directory__balance-copy strong {
+  color: #15836a;
+}
+
+.provider-directory__balance.is-error .provider-directory__balance-icon {
+  color: #c65b5b;
+  background: #fff0f1;
+}
+
+.provider-directory__balance.is-error .provider-directory__balance-copy strong {
+  color: #b85858;
 }
 
 .provider-directory__state {
@@ -654,51 +728,6 @@
   text-align: center;
 }
 
-.provider-balance-fields {
-  align-items: end;
-}
-
-.provider-balance-note,
-.provider-balance-result {
-  min-height: 36px;
-  margin: 0;
-  border-radius: 10px;
-  color: var(--utility-muted, #7b8996);
-  font-size: 12px;
-}
-
-.provider-balance-note {
-  display: flex;
-  align-items: center;
-  padding: 0 11px;
-  border: 1px dashed rgba(129, 177, 208, 0.3);
-  background: rgba(242, 250, 253, 0.7);
-}
-
-.provider-balance-result {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 11px;
-  border: 1px solid rgba(129, 177, 208, 0.15);
-  background: rgba(248, 251, 253, 0.8);
-}
-
-.provider-balance-result__icon {
-  display: inline-flex;
-  color: #98a8b1;
-}
-
-.provider-balance-result__icon.is-ready {
-  color: #179779;
-}
-
-.provider-balance-result__icon svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 1.8;
-}
-
 .provider-directory-page [role="switch"][data-state="checked"],
 .provider-editor-page [role="switch"][data-state="checked"] {
   background: var(--utility-teal, #1b9c8b) !important;
@@ -875,7 +904,7 @@
   }
 
   .provider-directory__row {
-    grid-template-columns: minmax(220px, 1fr) minmax(140px, 0.65fr) auto;
+    grid-template-columns: minmax(220px, 1fr) minmax(135px, 0.55fr) minmax(150px, 0.62fr) auto;
   }
 
   .provider-directory__health {
@@ -904,7 +933,7 @@
   }
 
   .provider-directory__row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 0.72fr);
     gap: 12px;
   }
 

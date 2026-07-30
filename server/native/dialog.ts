@@ -3,15 +3,21 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { getNativeStrings } from "../runtime/native-locale";
 
 const execFileAsync = promisify(execFile);
 
+function powerShellString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 export async function pickImageFile(): Promise<string | null> {
   if (process.platform !== "win32") return null;
+  const strings = await getNativeStrings();
   const ps = `
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.OpenFileDialog
-$d.Title = '选择背景图片 / 视频'
+$d.Title = ${powerShellString(strings.dialog.pickBackground)}
 $d.Filter = 'Media|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.mp4;*.webm;*.mov|All|*.*'
 $d.Multiselect = $false
 if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName } else { '' }
@@ -31,10 +37,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }
 
 export async function pickAvatarFile(): Promise<string | null> {
   if (process.platform !== "win32") return null;
+  const strings = await getNativeStrings();
   const ps = `
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.OpenFileDialog
-$d.Title = '选择头像图片'
+$d.Title = ${powerShellString(strings.dialog.pickAvatar)}
 $d.Filter = 'Images|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.svg|All|*.*'
 $d.Multiselect = $false
 if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName } else { '' }
@@ -54,10 +61,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }
 
 export async function pickFolder(): Promise<string | null> {
   if (process.platform !== "win32") return null;
+  const strings = await getNativeStrings();
   const ps = `
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.FolderBrowserDialog
-$d.Description = '选择随机图库目录'
+$d.Description = ${powerShellString(strings.dialog.pickRandomImageFolder)}
 if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.SelectedPath } else { '' }
 `.trim();
   try {

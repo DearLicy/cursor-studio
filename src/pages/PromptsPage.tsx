@@ -36,6 +36,7 @@ import {
   type PromptsListResult,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { RawText } from "@/lib/i18n-raw";
 
 type FormState = {
   id?: string;
@@ -363,7 +364,7 @@ export function PromptsPage() {
         <section className="prompts-workspace__error workspace-layer-enter workspace-layer-enter--delay-1" role="alert">
           <CircleAlert aria-hidden="true" />
           <strong>提示词加载失败</strong>
-          <p>{loadError}</p>
+          <p data-i18n-raw>{loadError}</p>
           <Button
             type="button"
             variant="outline"
@@ -436,6 +437,7 @@ export function PromptsPage() {
               {filtered.map((item, index) => {
                 const status = promptStatus(item, master);
                 const isPending = pendingItemId === item.id;
+                const userPreview = promptUserPreview(item);
                 return (
                   <article
                     className={cn("prompts-workspace__card", item.enabled ? "is-enabled" : "is-disabled")}
@@ -448,10 +450,15 @@ export function PromptsPage() {
                           <FileText />
                         </span>
                         <div className="prompts-workspace__title-wrap">
-                          <strong className="prompts-workspace__title" title={item.title}>
+                          <strong className="prompts-workspace__title" title={item.title} data-i18n-raw>
                             {item.title}
                           </strong>
-                          <span className="prompts-workspace__filename">{promptMeta(item)}</span>
+                          <span
+                            className="prompts-workspace__filename"
+                            data-i18n-raw={Boolean(item.scene?.trim()) || undefined}
+                          >
+                            {promptMeta(item)}
+                          </span>
                         </div>
                       </div>
                       <Switch
@@ -462,7 +469,12 @@ export function PromptsPage() {
                       />
                     </div>
 
-                    <p className="prompts-workspace__preview">{promptPreview(item)}</p>
+                    <p
+                      className="prompts-workspace__preview"
+                      data-i18n-raw={Boolean(userPreview) || undefined}
+                    >
+                      {userPreview || "尚未填写说明。"}
+                    </p>
 
                     <div className={cn("prompts-workspace__status", status.className)}>{status.label}</div>
 
@@ -580,11 +592,20 @@ export function PromptsPage() {
       <Dialog open={Boolean(preview)} onOpenChange={(open) => !open && setPreview(null)}>
         <DialogContent size="xl" className="prompts-workspace__dialog prompts-workspace__preview-dialog">
           <DialogHeader>
-            <DialogTitle>{preview?.title}</DialogTitle>
-            <DialogDescription>{preview ? promptMeta(preview) : ""}</DialogDescription>
+            <DialogTitle><RawText>{preview?.title || ""}</RawText></DialogTitle>
+            <DialogDescription>
+              {preview?.scene?.trim()
+                ? <RawText>{preview.scene.trim()}</RawText>
+                : preview ? promptMeta(preview) : ""}
+            </DialogDescription>
           </DialogHeader>
           <DialogBody className="prompts-workspace__dialog-body">
-            <pre className="prompts-workspace__preview-content">{preview?.content || "暂无内容"}</pre>
+            <pre
+              className="prompts-workspace__preview-content"
+              data-i18n-raw={Boolean(preview?.content) || undefined}
+            >
+              {preview?.content || "暂无内容"}
+            </pre>
           </DialogBody>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setPreview(null)}>
@@ -601,9 +622,9 @@ function promptMeta(item: PromptItem) {
   return item.scene?.trim() || (item.source === "custom" ? "自定义提示词" : "内置提示词");
 }
 
-function promptPreview(item: PromptItem) {
+function promptUserPreview(item: PromptItem) {
   const text = item.description.trim() || item.content.replace(/\s+/g, " ").trim();
-  return text || "尚未填写说明。";
+  return text;
 }
 
 function promptStatus(item: PromptItem, master: boolean) {

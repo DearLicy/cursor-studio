@@ -57,6 +57,10 @@ import {
   startPromotionsRefresh,
 } from "../server/runtime/promotions";
 import {
+  startProviderMonitor,
+  stopProviderMonitor,
+} from "../server/runtime/provider-monitor";
+import {
   getHomeMetricsSummary,
   setIncludeCacheWriteInHitRate,
   resetUsage,
@@ -135,6 +139,7 @@ import {
   installAvailableUpdate,
   UPDATE_CHECK_INTERVAL_MS,
 } from "./updater";
+import { getNativeStrings } from "../server/runtime/native-locale";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -309,7 +314,11 @@ async function collectReleaseStatus(options?: { refreshPromotions?: boolean }) {
   return { ...update, promotions: promotions.promotions };
 }
 
-function broadcastUpdateStatus(status: Awaited<ReturnType<typeof collectReleaseStatus>>) {
+type BroadcastUpdateStatus = Awaited<ReturnType<typeof checkForUpdates>> & {
+  promotions?: Awaited<ReturnType<typeof getPromotions>>["promotions"];
+};
+
+function broadcastUpdateStatus(status: BroadcastUpdateStatus) {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send("updates:status", status);
   }
@@ -368,6 +377,7 @@ function registerIpc() {
       console.warn("[electron] Cursor account cache sync deferred:", sync.error);
     }
     await configureBackgroundAutoRotation();
+    await refreshTrayMenu(() => win);
     return saved;
   });
   ipcMain.handle("config:import", async (_e, cfg: unknown) => {
@@ -383,6 +393,7 @@ function registerIpc() {
       console.warn("[electron] Cursor account cache sync deferred:", sync.error);
     }
     await configureBackgroundAutoRotation();
+    await refreshTrayMenu(() => win);
     return saved;
   });
   ipcMain.handle("config:backup", async () => ({
@@ -408,6 +419,7 @@ function registerIpc() {
       console.warn("[electron] Cursor account cache sync deferred:", sync.error);
     }
     await configureBackgroundAutoRotation();
+    await refreshTrayMenu(() => win);
     return saved;
   });
 
@@ -463,6 +475,7 @@ function registerIpc() {
         enabled?: boolean;
         modelID?: string;
         openAIEndpoint?: ModelProvider["openAIEndpoint"];
+        costMultiplier?: number;
         reasoningEffort?: string;
         balance?: ModelProvider["balance"];
       },
@@ -491,8 +504,13 @@ function registerIpc() {
     getPromotions({ refresh: options?.refresh === true }),
   );
   ipcMain.handle("updates:check", async () => {
-    const status = await collectReleaseStatus({ refreshPromotions: true });
+    const status = await checkForUpdates();
     broadcastUpdateStatus(status);
+    void refreshPromotions()
+      .then((promotions) => {
+        broadcastUpdateStatus({ ...getLastUpdateCheck(), promotions: promotions.promotions });
+      })
+      .catch(() => undefined);
     return status;
   });
   ipcMain.handle("updates:status", async () => {
@@ -720,8 +738,9 @@ function registerIpc() {
     return p;
   });
   ipcMain.handle("dialog:pickImage", async () => {
+    const strings = await getNativeStrings(app.getLocale());
     const res = await dialog.showOpenDialog(win!, {
-      title: "选择背景图片 / 视频",
+      title: strings.dialog.pickBackground,
       filters: [
         {
           name: "Media",
@@ -734,8 +753,9 @@ function registerIpc() {
     return res.filePaths[0];
   });
   ipcMain.handle("dialog:pickAvatar", async () => {
+    const strings = await getNativeStrings(app.getLocale());
     const res = await dialog.showOpenDialog(win!, {
-      title: "选择头像图片",
+      title: strings.dialog.pickAvatar,
       filters: [
         {
           name: "Images",
@@ -748,8 +768,9 @@ function registerIpc() {
     return res.filePaths[0];
   });
   ipcMain.handle("dialog:pickFolder", async () => {
+    const strings = await getNativeStrings(app.getLocale());
     const res = await dialog.showOpenDialog(win!, {
-      title: "选择随机图库目录",
+      title: strings.dialog.pickRandomImageFolder,
       properties: ["openDirectory"],
     });
     if (res.canceled || !res.filePaths[0]) return null;
@@ -778,6 +799,7 @@ if (!gotLock) {
     createWindow();
     createTray(() => win);
     startNativeReleaseChecks();
+    startProviderMonitor();
 
     // in the background as soon as the application is ready.
     void startService()
@@ -808,6 +830,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", (event) => {
   setIsQuitting(true);
   destroyTray();
+  stopProviderMonitor();
   if (quitCleanupFinished) return;
 
   event.preventDefault();

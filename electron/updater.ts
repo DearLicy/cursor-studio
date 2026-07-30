@@ -10,6 +10,7 @@ import {
   RELEASE_REPOSITORY_URL,
   RELEASE_UPDATE_MANIFEST_URL,
 } from "../shared/release-source";
+import type { UpdateMessage } from "../shared/update-contract";
 
 export const UPDATE_CHECK_INTERVAL_MS = RELEASE_CHECK_INTERVAL_MS;
 
@@ -39,7 +40,7 @@ export interface UpdateCheckResult {
   state: UpdateCheckState;
   currentVersion: string;
   checkedAt: string;
-  message?: string;
+  message?: UpdateMessage;
   update?: AppUpdateInfo;
 }
 
@@ -53,7 +54,7 @@ export interface UpdateProgress {
 export interface UpdateInstallResult {
   state: "unsupported" | "not-configured" | "no-update" | "restarting" | "error";
   currentVersion: string;
-  message: string;
+  message: UpdateMessage;
   update?: AppUpdateInfo;
 }
 
@@ -276,40 +277,33 @@ function assertReleaseDownloadUrl(rawUrl: string, repository: string): void {
   }
 }
 
-async function fetchWithTimeout(
-  input: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(input, { ...init, signal: controller.signal });
-    if (new URL(response.url).protocol !== "https:") {
-      throw new Error("The update server returned a non-HTTPS address.");
-    }
-    return response;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function fetchJson(rawUrl: string, headers?: Record<string, string>): Promise<unknown> {
-  const response = await fetchWithTimeout(
-    rawUrl,
-    {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+  try {
+    const response = await fetch(rawUrl, {
       headers: {
         Accept: "application/json",
         "User-Agent": `Cursor-Studio/${currentVersion()}`,
         ...headers,
       },
-    },
-    CHECK_TIMEOUT_MS,
-  );
-  if (!response.ok) {
-    throw new HttpStatusError(response.status, `Update request failed (${response.status}).`);
+      signal: controller.signal,
+    });
+    if (new URL(response.url).protocol !== "https:") {
+      throw new Error("The update server returned a non-HTTPS address.");
+    }
+    if (!response.ok) {
+      throw new HttpStatusError(response.status, `Update request failed (${response.status}).`);
+    }
+    return JSON.parse(await response.text()) as unknown;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Update request timed out after ${CHECK_TIMEOUT_MS / 1_000} seconds.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  return response.json();
 }
 
 function isMissingManifest(error: unknown): boolean {
@@ -420,7 +414,7 @@ function toUpdateInfo(
   };
 }
 
-function unsupportedResult(message: string): UpdateCheckResult {
+function unsupportedResult(message: UpdateMessage): UpdateCheckResult {
   return {
     state: "unsupported",
     currentVersion: currentVersion(),
@@ -429,9 +423,9 @@ function unsupportedResult(message: string): UpdateCheckResult {
   };
 }
 
-function runtimeAvailability(): string | null {
-  if (!app.isPackaged) return "Development mode: updates are available in installed builds only.";
-  if (process.platform !== "win32") return "Automatic updates are currently available on Windows only.";
+function runtimeAvailability(): UpdateMessage | null {
+  if (!app.isPackaged) return { code: "development-only" };
+  if (process.platform !== "win32") return { code: "windows-only" };
   return null;
 }
 
@@ -445,7 +439,7 @@ async function performCheck(): Promise<UpdateCheckResult> {
       state: "not-configured",
       currentVersion: currentVersion(),
       checkedAt: now(),
-      message: "更新服务尚未配置。",
+      message: { code: "not-configured" },
     };
   }
 
@@ -488,22 +482,25 @@ async function performCheck(): Promise<UpdateCheckResult> {
     }
 
     const current = currentVersion();
+    const available = compareVersions(update.version, current) > 0;
     return {
-      state: compareVersions(update.version, current) > 0 ? "available" : "up-to-date",
+      state: available ? "available" : "up-to-date",
       currentVersion: current,
       checkedAt: now(),
-      message:
-        compareVersions(update.version, current) > 0
-          ? `发现 Cursor Studio v${update.version}。`
-          : "当前已是最新版本。",
-      update: compareVersions(update.version, current) > 0 ? update : undefined,
+      message: available
+        ? { code: "available", args: { version: update.version } }
+        : { code: "up-to-date" },
+      update: available ? update : undefined,
     };
   } catch (error) {
     return {
       state: "error",
       currentVersion: currentVersion(),
       checkedAt: now(),
-      message: error instanceof Error ? error.message : "更新检查失败。",
+      message: {
+        code: "check-failed",
+        detail: error instanceof Error ? error.message : undefined,
+      },
     };
   }
 }
@@ -557,13 +554,17 @@ async function downloadUpdate(
   const fileName = `.cursor-studio-${safeVersion(update.version)}-${randomUUID()}.update.msi`;
   const targetPath = path.join(stagingDirectory, fileName);
   const partialPath = `${targetPath}.part`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
 
   try {
-    const response = await fetchWithTimeout(
-      update.downloadUrl,
-      { headers: { "User-Agent": `Cursor-Studio/${currentVersion()}` } },
-      DOWNLOAD_TIMEOUT_MS,
-    );
+    const response = await fetch(update.downloadUrl, {
+      headers: { "User-Agent": `Cursor-Studio/${currentVersion()}` },
+      signal: controller.signal,
+    });
+    if (new URL(response.url).protocol !== "https:") {
+      throw new Error("The update server returned a non-HTTPS address.");
+    }
     if (!response.ok || !response.body) {
       throw new Error(`更新下载失败（${response.status}）。`);
     }
@@ -600,7 +601,12 @@ async function downloadUpdate(
   } catch (error) {
     await fs.rm(partialPath, { force: true }).catch(() => undefined);
     await fs.rm(targetPath, { force: true }).catch(() => undefined);
+    if (controller.signal.aborted) {
+      throw new Error(`Update download timed out after ${DOWNLOAD_TIMEOUT_MS / 60_000} minutes.`);
+    }
     throw error;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -674,14 +680,14 @@ export async function installAvailableUpdate(
       return {
         state: "not-configured",
         currentVersion: currentVersion(),
-        message: result.message || "更新服务尚未配置。",
+        message: result.message || { code: "not-configured" },
       };
     }
     if (result.state !== "available" || !result.update) {
       return {
         state: "no-update",
         currentVersion: currentVersion(),
-        message: result.message || "当前没有可安装的更新。",
+        message: result.message || { code: "no-update" },
       };
     }
 
@@ -692,14 +698,17 @@ export async function installAvailableUpdate(
       return {
         state: "restarting",
         currentVersion: currentVersion(),
-        message: "更新已校验，正在安装并重新启动应用。",
+        message: { code: "restarting" },
         update: result.update,
       };
     } catch (error) {
       return {
         state: "error",
         currentVersion: currentVersion(),
-        message: error instanceof Error ? error.message : "更新安装失败。",
+        message: {
+          code: "install-failed",
+          detail: error instanceof Error ? error.message : undefined,
+        },
         update: result.update,
       };
     }
