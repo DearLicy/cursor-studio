@@ -1,10 +1,10 @@
 {
-  "version": "1.0.3",
-  "name": "Cursor Studio v1.0.3",
-  "notes": "- 修复部分会话出现重复思考、重复回复或内容异常清空的问题。\n- 提升 Plan 模式、长会话、工具调用和断线恢复的稳定性。\n- 优化服务异常与上下文超限时的提示和恢复体验。",
-  "publishedAt": "2026-07-26T19:04:37Z",
-  "releaseUrl": "https://github.com/DearLicy/cursor-studio/releases/tag/v1.0.3",
-  "downloadUrl": "https://github.com/DearLicy/cursor-studio/releases/download/v1.0.3/Cursor.Studio.msi",
-  "sha256": "e823c66d71cb2f985f3b51f0b3c49cd7dcbce1fe910bc50841548a558d037947",
-  "size": 90648576
+  "version": "1.0.4",
+  "name": "Cursor Studio v1.0.4",
+  "notes": "- Added English and Simplified Chinese interfaces with a title-bar language menu.\n- Added automatic New API/Sub2API balances, provider cost multipliers, and 10-minute monitoring.\n- Improved metric and Sonner animations, hardened online updates, and fixed QR assets, encoding, cost synchronization, and dynamic user-text translation.\n\n- 新增英文与简体中文界面及标题栏语言菜单。\n- 新增 New API/Sub2API 自动余额、供应商价格倍率和每 10 分钟定时监测。\n- 优化指标与 Sonner 动画和在线更新，修复二维码资源、编码、费用同步及用户内容误翻译问题。",
+  "publishedAt": "2026-07-30T02:06:09Z",
+  "releaseUrl": "https://github.com/DearLicy/cursor-studio/releases/tag/v1.0.4",
+  "downloadUrl": "https://github.com/DearLicy/cursor-studio/releases/download/v1.0.4/Cursor.Studio.msi",
+  "sha256": "139ac242d0a732f32ee2fe7736aace2455a72e421e0f4a8f2e7adbe73e3471f3",
+  "size": 102248448
 }
